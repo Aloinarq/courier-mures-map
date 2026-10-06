@@ -14,10 +14,14 @@ Outputs:
   data/blocks.geojson      buildings (polygons) + address points
   data/entrances.geojson   entrances, each linked to a building
   data/stats.json          coverage numbers (also printed)
+  data/roads.geojson       named/usable streets as LineStrings (our own street layer)
+  data/context.geojson     river, lakes, big parks, railways (orientation only)
+  data/raw_roads.json, data/raw_context.json   untouched Overpass responses (gitignored)
 
 Usage:
   python3 fetch_data.py              # download + process
-  python3 fetch_data.py --from-raw   # re-process data/raw_overpass.json only
+  python3 fetch_data.py --from-raw   # re-process the raw_*.json files only
+  python3 fetch_data.py --roads-only # (re)download + rebuild only roads/context, keep blocks
 
 Standard library only – no pip install needed.
 """
@@ -40,6 +44,8 @@ from collections import Counter, defaultdict
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
 RAW_PATH = os.path.join(DATA, "raw_overpass.json")
+RAW_ROADS_PATH = os.path.join(DATA, "raw_roads.json")
+RAW_CONTEXT_PATH = os.path.join(DATA, "raw_context.json")
 
 BBOX = (46.49, 24.47, 46.60, 24.66)  # south, west, north, east
 ENDPOINTS = [
@@ -71,6 +77,26 @@ QUERY = """
 out body geom qt;
 """
 
+
+ROAD_CLASSES = ("motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|"
+                "pedestrian|footway|path|track|steps|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link")
+ROADS_QUERY = """
+[out:json][timeout:{t}][maxsize:536870912];
+way["highway"~"^({classes})$"]({b});
+out tags geom qt;
+"""
+CONTEXT_QUERY = """
+[out:json][timeout:{t}][maxsize:536870912];
+(
+  way["waterway"="river"]({b});
+  way["natural"="water"]({b});
+  relation["natural"="water"]({b});
+  way["leisure"="park"]({b});
+  relation["leisure"="park"]({b});
+  way["railway"="rail"]({b});
+);
+out tags geom qt;
+"""
 
 # ----------------------------------------------------------------------------
 # Download
@@ -109,8 +135,8 @@ def _post_curl(url, query):
     return code, body
 
 
-def download():
-    query = QUERY.format(t=OVERPASS_TIMEOUT, b="{},{},{},{}".format(*BBOX))
+def download(query=None):
+    query = query or QUERY.format(t=OVERPASS_TIMEOUT, b="{},{},{},{}".format(*BBOX))
     use_curl = False
     errors = []
     for url in ENDPOINTS:
@@ -635,6 +661,136 @@ def process(raw):
     return feats, ent_feats, places, link_method, loose_addr
 
 
+# ----------------------------------------------------------------------------
+# Roads + orientation context (our own street map, no tiles needed)
+# ----------------------------------------------------------------------------
+
+MIN_FOOTWAY_M = 15          # unnamed footway/path/steps shorter than this are noise
+ROAD_SIMPLIFY_M = 0.8       # Douglas-Peucker tolerance for roads
+CONTEXT_SIMPLIFY_M = 2.0
+MIN_PARK_M2 = 20000         # only "big" parks
+MIN_WATER_M2 = 2500
+MINOR_UNNAMED = {"footway", "path", "steps"}
+
+
+def path_length_m(pts):
+    return sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+
+
+def simplify_xy(pts, tol):
+    """Douglas-Peucker on [(x, y), ...] (metres); keeps the end points."""
+    if len(pts) < 3:
+        return list(range(len(pts)))
+    keep = {0, len(pts) - 1}
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        a, b = stack.pop()
+        best, idx = -1.0, None
+        for i in range(a + 1, b):
+            d = dist_point_seg(pts[i][0], pts[i][1], pts[a][0], pts[a][1], pts[b][0], pts[b][1])
+            if d > best:
+                best, idx = d, i
+        if idx is not None and best > tol:
+            keep.add(idx)
+            stack.append((a, idx))
+            stack.append((idx, b))
+    return sorted(keep)
+
+
+def simplified_lonlat(latlon, tol, digits):
+    pts = [xy(la, lo) for la, lo in latlon]
+    return [[round(latlon[i][1], digits), round(latlon[i][0], digits)] for i in simplify_xy(pts, tol)]
+
+
+def process_roads(raw):
+    feats, dropped = [], Counter()
+    for e in raw.get("elements", []):
+        t = e.get("tags", {})
+        h = t.get("highway")
+        g = [(p["lat"], p["lon"]) for p in e.get("geometry", []) if p]
+        if e["type"] != "way" or not h or len(g) < 2:
+            continue
+        if h == "service" and t.get("service") == "parking_aisle":
+            dropped["parking_aisle"] += 1
+            continue
+        pts = [xy(la, lo) for la, lo in g]
+        named = bool(t.get("name"))
+        if h in MINOR_UNNAMED and not named and path_length_m(pts) < MIN_FOOTWAY_M:
+            dropped["short unnamed footway"] += 1
+            continue
+        coords = simplified_lonlat(g, ROAD_SIMPLIFY_M, 6)
+        props = {"h": h}
+        for k, v in (("n", t.get("name")), ("r", t.get("ref")), ("o", t.get("oneway")),
+                     ("s", t.get("service")), ("a", t.get("access"))):
+            if v and v not in ("no",) :
+                props[k] = v
+        feats.append({"type": "Feature", "geometry": {"type": "LineString", "coordinates": coords}, "properties": props})
+    return feats, dropped
+
+
+def process_context(raw):
+    feats, kept = [], Counter()
+
+    def add(kind, geom, name=None):
+        props = {"k": kind}
+        if name:
+            props["n"] = name
+        feats.append({"type": "Feature", "geometry": geom, "properties": props})
+        kept[kind] += 1
+
+    for e in raw.get("elements", []):
+        t = e.get("tags", {})
+        name = t.get("name")
+        if e["type"] == "way":
+            g = [(p["lat"], p["lon"]) for p in e.get("geometry", []) if p]
+            if len(g) < 2:
+                continue
+            if t.get("waterway") == "river":
+                add("river", {"type": "LineString", "coordinates": simplified_lonlat(g, CONTEXT_SIMPLIFY_M, 5)}, name)
+            elif t.get("railway") == "rail":
+                if t.get("service") in ("yard", "siding", "spur"):
+                    continue
+                add("rail", {"type": "LineString", "coordinates": simplified_lonlat(g, CONTEXT_SIMPLIFY_M, 5)})
+            elif g[0] == g[-1] and len(g) >= 4:
+                rings = [g]
+                kind = "water" if t.get("natural") == "water" else "park"
+                area = abs(ring_area_xy([xy(la, lo) for la, lo in g]))
+                if area >= (MIN_WATER_M2 if kind == "water" else MIN_PARK_M2):
+                    add(kind, {"type": "Polygon", "coordinates": [simplified_lonlat(g, CONTEXT_SIMPLIFY_M, 5)]}, name)
+        elif e["type"] == "relation":
+            kind = "water" if t.get("natural") == "water" else ("park" if t.get("leisure") == "park" else None)
+            if not kind:
+                continue
+            outer = [[(p["lat"], p["lon"]) for p in m["geometry"] if p] for m in e.get("members", [])
+                     if m.get("type") == "way" and m.get("geometry") and m.get("role") != "inner"]
+            for ring in join_rings(outer):
+                area = abs(ring_area_xy([xy(la, lo) for la, lo in ring]))
+                if area >= (MIN_WATER_M2 if kind == "water" else MIN_PARK_M2):
+                    add(kind, {"type": "Polygon", "coordinates": [simplified_lonlat(ring, CONTEXT_SIMPLIFY_M, 5)]}, name)
+    return feats, kept
+
+
+def write_geojson(path, feats, meta):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"type": "FeatureCollection", "metadata": meta, "features": feats}, fh,
+                  ensure_ascii=False, separators=(",", ":"))
+    return os.path.getsize(path)
+
+
+def build_roads_and_context(roads_raw, context_raw, meta):
+    rf, dropped = process_roads(roads_raw)
+    cf, kept = process_context(context_raw)
+    rs = write_geojson(os.path.join(DATA, "roads.geojson"), rf, meta)
+    cs = write_geojson(os.path.join(DATA, "context.geojson"), cf, meta)
+    classes = Counter(f["properties"]["h"] for f in rf)
+    named = {f["properties"]["n"] for f in rf if f["properties"].get("n")}
+    print(f"\nroads.geojson:   {len(rf)} ways, {len(named)} distinct street names, {rs/1e6:.2f} MB  "
+          f"(dropped: {dict(dropped)})")
+    print("  by class:", dict(classes.most_common()))
+    print(f"context.geojson: {len(cf)} features {dict(kept)}, {cs/1e6:.2f} MB")
+    return {"roads": len(rf), "street_names": len(named), "roads_bytes": rs, "context_bytes": cs}
+
+
 def report(feats, ent_feats, places, link_method, loose_addr):
     polys = [f for f in feats if f["properties"]["kind"] != "address"]
     apts = [f for f in polys if f["properties"]["kind"] == "apartments"]
@@ -730,39 +886,78 @@ def report(feats, ent_feats, places, link_method, loose_addr):
     }
 
 
+def load_or_download(path, query, label):
+    print(f"\n== {label} ==")
+    raw = download(query)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(raw, fh, ensure_ascii=False)
+    print("saved", path)
+    return raw
+
+
+def roads_queries():
+    b = "{},{},{},{}".format(*BBOX)
+    return (ROADS_QUERY.format(t=OVERPASS_TIMEOUT, b=b, classes=ROAD_CLASSES),
+            CONTEXT_QUERY.format(t=OVERPASS_TIMEOUT, b=b))
+
+
 def main():
     os.makedirs(DATA, exist_ok=True)
-    if "--from-raw" in sys.argv:
-        with open(RAW_PATH, encoding="utf-8") as fh:
-            raw = json.load(fh)
-        print(f"Re-processing {RAW_PATH} ({len(raw.get('elements', []))} elements)")
-    else:
-        raw = download()
-        with open(RAW_PATH, "w", encoding="utf-8") as fh:
-            json.dump(raw, fh, ensure_ascii=False)
-        print("saved", RAW_PATH)
+    from_raw = "--from-raw" in sys.argv
+    roads_only = "--roads-only" in sys.argv
+    q_roads, q_context = roads_queries()
 
-    feats, ent_feats, places, link_method, loose_addr = process(raw)
-    stats = report(feats, ent_feats, places, link_method, loose_addr)
+    def load(path, query, label):
+        if from_raw:
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            print(f"Re-processing {path} ({len(raw.get('elements', []))} elements)")
+            return raw
+        return load_or_download(path, query, label)
 
-    osm_ts = (raw.get("osm3s") or {}).get("timestamp_osm_base")
-    stats["osm_timestamp"] = osm_ts
-    for f in feats:
-        f.pop("_tags", None)
-    for f in ent_feats:  # keep only the tags that matter
-        f["properties"]["tags"] = {k: v for k, v in f["properties"]["tags"].items()
-                                   if k.startswith(("entrance", "ref", "addr:", "name", "level", "door"))}
-    meta = {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": osm_ts}
-    with open(os.path.join(DATA, "blocks.geojson"), "w", encoding="utf-8") as fh:
-        json.dump({"type": "FeatureCollection", "metadata": meta, "features": feats}, fh,
-                  ensure_ascii=False, separators=(",", ":"))
-    with open(os.path.join(DATA, "entrances.geojson"), "w", encoding="utf-8") as fh:
-        json.dump({"type": "FeatureCollection", "metadata": meta, "features": ent_feats}, fh,
-                  ensure_ascii=False, separators=(",", ":"))
-    with open(os.path.join(DATA, "stats.json"), "w", encoding="utf-8") as fh:
-        json.dump(stats, fh, ensure_ascii=False, indent=1)
-    print("\nwrote data/blocks.geojson, data/entrances.geojson, data/stats.json")
-    print(f"OSM data timestamp: {osm_ts}")
+    if not roads_only:
+        if from_raw:
+            with open(RAW_PATH, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            print(f"Re-processing {RAW_PATH} ({len(raw.get('elements', []))} elements)")
+        else:
+            raw = download()
+            with open(RAW_PATH, "w", encoding="utf-8") as fh:
+                json.dump(raw, fh, ensure_ascii=False)
+            print("saved", RAW_PATH)
+
+        feats, ent_feats, places, link_method, loose_addr = process(raw)
+        stats = report(feats, ent_feats, places, link_method, loose_addr)
+
+        osm_ts = (raw.get("osm3s") or {}).get("timestamp_osm_base")
+        stats["osm_timestamp"] = osm_ts
+        for f in feats:
+            f.pop("_tags", None)
+        for f in ent_feats:  # keep only the tags that matter
+            f["properties"]["tags"] = {k: v for k, v in f["properties"]["tags"].items()
+                                       if k.startswith(("entrance", "ref", "addr:", "name", "level", "door"))}
+        meta = {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": osm_ts}
+        write_geojson(os.path.join(DATA, "blocks.geojson"), feats, meta)
+        write_geojson(os.path.join(DATA, "entrances.geojson"), ent_feats, meta)
+        with open(os.path.join(DATA, "stats.json"), "w", encoding="utf-8") as fh:
+            json.dump(stats, fh, ensure_ascii=False, indent=1)
+        print("\nwrote data/blocks.geojson, data/entrances.geojson, data/stats.json")
+        print(f"OSM data timestamp: {osm_ts}")
+
+    if from_raw and not (os.path.exists(RAW_ROADS_PATH) and os.path.exists(RAW_CONTEXT_PATH)):
+        print("\n(no raw_roads.json / raw_context.json yet: run without --from-raw to fetch roads)")
+        return
+    roads_raw = load(RAW_ROADS_PATH, q_roads, "roads")
+    context_raw = load(RAW_CONTEXT_PATH, q_context, "context (river, water, parks, railways)")
+    ts = (roads_raw.get("osm3s") or {}).get("timestamp_osm_base")
+    info = build_roads_and_context(roads_raw, context_raw, {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": ts})
+    sp = os.path.join(DATA, "stats.json")
+    if os.path.exists(sp):
+        with open(sp, encoding="utf-8") as fh:
+            st = json.load(fh)
+        st.update(info)
+        with open(sp, "w", encoding="utf-8") as fh:
+            json.dump(st, fh, ensure_ascii=False, indent=1)
 
 
 if __name__ == "__main__":
