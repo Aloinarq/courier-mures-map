@@ -390,7 +390,45 @@ def entrance_label(t):
             if SHORT_CODE.match(core):
                 return f"Sc. {core.upper() if core.isalpha() else core}", k
             return v, k
+    # Staircase codes are almost never mapped in Targu Mures; the only per-entrance
+    # identifier OSM usually has is the street number. Show it as "nr. 4" (never as
+    # "Sc. 4": that would claim a staircase number we do not know).
+    hn = (t.get("addr:housenumber") or "").strip()
+    if hn:
+        return f"nr. {hn}", "addr:housenumber"
     return "", None
+
+
+NUM_TOKEN = re.compile(r"(\d+)\s*([A-Za-z]?)")
+
+
+def number_tokens(*values):
+    """All street numbers a building answers to: '2-6' -> {2,4,6}, '30A, 30B' -> {30A,30B}."""
+    out = set()
+    for v in values:
+        v = (v or "").replace("\u2013", "-")
+        for a, b in re.findall(r"(\d+)\s*-\s*(\d+)", v):
+            a, b = int(a), int(b)
+            if a < b and b - a <= 40:
+                out.update(str(n) for n in range(a, b + 1, 2 if (b - a) % 2 == 0 else 1))
+        for num, letter in NUM_TOKEN.findall(v):
+            out.add(num + letter.upper())
+        for m in re.finditer(r"(\d+)\s*([A-Za-z])(?:\s*[/,]\s*([A-Za-z]))+", v):  # '32 A/B'
+            for letter in re.findall(r"[A-Za-z]", v[m.start(2):m.end()]):
+                out.add(m.group(1) + letter.upper())
+    return out
+
+
+def numbers_match(a, b):
+    """Token sets match exactly, or one side is the bare number of a lettered one ('6' ~ '6A')."""
+    if a & b:
+        return True
+    base = lambda tokens: {re.sub(r"[A-Z]$", "", x) for x in tokens}
+    return bool(base(a) & {x for x in b if x.isdigit()} or {x for x in a if x.isdigit()} & base(b))
+
+
+def is_stair_label(label):
+    return bool(label) and not label.startswith("nr. ")
 
 
 # ----------------------------------------------------------------------------
@@ -484,21 +522,31 @@ def process(raw):
             method, dist = "outline", 0.0
         else:
             best = None
+            hn = (t.get("addr:housenumber") or "").strip()
+            want = number_tokens(hn) if hn else set()
             for b in grid.near(px, py, ENTRANCE_LINK_MAX_M):
                 p = b["poly"]
                 d = 0.0 if p.contains(px, py) else p.edge_distance(px, py)
+                if d > ENTRANCE_LINK_MAX_M:
+                    continue
+                # an entrance that carries a street number may only attach to a building
+                # with that number (otherwise it lands on the neighbouring block)
+                if want:
+                    if "tokens" not in b:
+                        bt = b["el"].get("tags", {})
+                        b["tokens"] = number_tokens(bt.get("addr:housenumber"), *b["extra_numbers"])
+                    if not numbers_match(want, b["tokens"]):
+                        continue
                 # prefer apartment blocks a little when distances are similar
                 score = d - (3 if b["el"]["tags"].get("building") == "apartments" else 0)
-                if d <= ENTRANCE_LINK_MAX_M and (best is None or score < best[0]):
+                if best is None or score < best[0]:
                     best = (score, d, b)
             if best:
                 target, dist = best[2], best[1]
                 method = "inside" if dist == 0 else "nearest"
         link_method[method or "none"] += 1
         bid = f"{target['el']['type'][0]}{target['el']['id']}" if target else None
-        if target is not None:
-            target.setdefault("entrances", []).append(label)
-        ent_feats.append({
+        ent_f = {
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [n["lon"], n["lat"]]},
             "properties": {
@@ -513,7 +561,10 @@ def process(raw):
                 "wheelchair": t.get("wheelchair"),
                 "tags": t,
             },
-        })
+        }
+        ent_feats.append(ent_f)
+        if target is not None:
+            target.setdefault("ent_feats", []).append(ent_f)
 
     # building features
     def sort_key(s):
@@ -534,8 +585,19 @@ def process(raw):
             derived["block_from"] = "address node(s) inside"
         if not t.get("addr:street") and b["extra_streets"]:
             t["addr:street"] = sorted(set(b["extra_streets"]))[0]
-        ents = sorted({x for x in b.get("entrances", []) if x}, key=lambda s: (len(s), s))
-        n_unlabelled = sum(1 for x in b.get("entrances", []) if not x)
+        efs = b.get("ent_feats", [])
+        # a lone entrance (or entrances that all repeat the building's own number) adds
+        # nothing on the map: keep the data but hide the duplicate pill
+        hn_b = fold(t.get("addr:housenumber"))
+        num_efs = [x for x in efs if x["properties"]["label_key"] == "addr:housenumber"]
+        if num_efs and (len(efs) == 1 or {fold(x["properties"]["housenumber"]) for x in num_efs} == {hn_b}):
+            for x in num_efs:
+                x["properties"]["label"], x["properties"]["redundant"] = "", True
+        ents = sorted({x["properties"]["label"] for x in efs if is_stair_label(x["properties"]["label"])},
+                      key=lambda s: (len(s), s))
+        ent_nums = sorted({x["properties"]["housenumber"] for x in efs
+                           if x["properties"]["label"] and not is_stair_label(x["properties"]["label"])}, key=sort_key)
+        n_unlabelled = sum(1 for x in efs if not x["properties"]["label"] and not x["properties"].get("redundant"))
         is_apts = t.get("building") == "apartments"
         kind = "address" if b.get("addr_only") else ("apartments" if is_apts else "other")
         props = {
@@ -550,6 +612,7 @@ def process(raw):
             "levels": t.get("building:levels"),
             "building": t.get("building"),
             "entrances": ents,
+            "entrance_nums": ent_nums,
             "entrances_unlabelled": n_unlabelled,
             **derived,
         }
@@ -579,7 +642,9 @@ def report(feats, ent_feats, places, link_method, loose_addr):
     apts_lab = [f for f in apts if f["properties"]["label"]]
     apts_blk = [f for f in apts if f["properties"]["block"]]
     apts_ent = [f for f in apts if f["properties"]["entrances"]]
-    ents_lab = [f for f in ent_feats if f["properties"]["label"]]
+    apts_num = [f for f in apts if f["properties"]["entrance_nums"]]
+    ents_lab = [f for f in ent_feats if is_stair_label(f["properties"]["label"])]
+    ents_num = [f for f in ent_feats if f["properties"]["label"] and not is_stair_label(f["properties"]["label"])]
     ents_linked = [f for f in ent_feats if f["properties"]["building_id"]]
 
     def pct(a, b):
@@ -592,9 +657,11 @@ def report(feats, ent_feats, places, link_method, loose_addr):
     print(f"    … with number/label:               {len(apts_lab)}  ({pct(len(apts_lab), len(apts))})")
     print(f"    … with addr:block (Bl.):           {len(apts_blk)}  ({pct(len(apts_blk), len(apts))})")
     print(f"    … with ≥1 labelled staircase:      {len(apts_ent)}  ({pct(len(apts_ent), len(apts))})")
+    print(f"    … with entrance street numbers:    {len(apts_num)}  ({pct(len(apts_num), len(apts))})")
     print(f"Loose address points (not in a bldg):  {loose_addr}")
     print(f"Entrances:                             {len(ent_feats)}")
-    print(f"  with a label (Sc. …):                {len(ents_lab)}  ({pct(len(ents_lab), len(ent_feats))})")
+    print(f"  with a staircase label (Sc. …):      {len(ents_lab)}  ({pct(len(ents_lab), len(ent_feats))})")
+    print(f"  with only a street number (nr. …):   {len(ents_num)}  ({pct(len(ents_num), len(ent_feats))})")
     print(f"  linked to a building:                {len(ents_linked)}  ({pct(len(ents_linked), len(ent_feats))})"
           f"   [outline {link_method['outline']}, inside {link_method['inside']}, "
           f"nearest≤{ENTRANCE_LINK_MAX_M}m {link_method['nearest']}, none {link_method['none']}]")
@@ -619,12 +686,13 @@ def report(feats, ent_feats, places, link_method, loose_addr):
         p = f["properties"]
         extra = " (nr from address node)" if p.get("housenumber_from") else ""
         print(f"  {p['label']!s:28s} ← {raw}{extra}  sc: {', '.join(p['entrances']) or '–'}")
-    print("\n12 sample entrance labels:")
-    for f in rnd.sample(ents_lab, min(12, len(ents_lab))):
+    print("\n12 sample entrance labels (staircase codes first, then street numbers):")
+    pool = ents_lab + rnd.sample(ents_num, min(9, len(ents_num)))
+    for f in pool[:12]:
         t = f["properties"]["tags"]
         raw = {k: t[k] for k in ("entrance", "entrance:ref", "ref", "addr:unit", "addr:entrance", "name") if k in t}
         print(f"  {f['properties']['label']!s:10s} ← {raw}")
-    odd = [f["properties"]["label"] for f in ents_lab if not f["properties"]["label"].startswith("Sc. ")]
+    odd = [f["properties"]["label"] for f in ents_lab if not f["properties"]["label"].startswith("Sc. ")]  # e.g. free-text names
     if odd:
         print(f"Entrance labels not in 'Sc. X' form ({len(odd)}):", Counter(odd).most_common(15))
 
@@ -654,8 +722,10 @@ def report(feats, ent_feats, places, link_method, loose_addr):
         "buildings": len(polys), "buildings_labelled": len(labelled),
         "apartments": len(apts), "apartments_labelled": len(apts_lab),
         "apartments_with_block": len(apts_blk), "apartments_with_stairs": len(apts_ent),
+        "apartments_with_entrance_numbers": len(apts_num),
         "address_points": loose_addr,
-        "entrances": len(ent_feats), "entrances_labelled": len(ents_lab), "entrances_linked": len(ents_linked),
+        "entrances": len(ent_feats), "entrances_labelled": len(ents_lab), "entrances_numbered": len(ents_num),
+        "entrances_linked": len(ents_linked),
         "neighbourhoods": [{"name": n, "blocks": v[0], "labelled": v[1], "with_stairs": v[2]} for n, v in rows],
     }
 

@@ -1,0 +1,126 @@
+{
+ "generated": "2026-10-06 21:16",
+ "buildings": 4597,
+ "buildings_labelled": 4476,
+ "apartments": 706,
+ "apartments_labelled": 585,
+ "apartments_with_block": 3,
+ "apartments_with_stairs": 1,
+ "apartments_with_entrance_numbers": 199,
+ "address_points": 6522,
+ "entrances": 1643,
+ "entrances_labelled": 3,
+ "entrances_numbered": 964,
+ "entrances_linked": 1117,
+ "neighbourhoods": [
+  {
+   "name": "Tudor Vladimirescu",
+   "blocks": 260,
+   "labelled": 220,
+   "with_stairs": 0
+  },
+  {
+   "name": "Unirii",
+   "blocks": 83,
+   "labelled": 58,
+   "with_stairs": 0
+  },
+  {
+   "name": "Budai Nagy Antal",
+   "blocks": 51,
+   "labelled": 47,
+   "with_stairs": 0
+  },
+  {
+   "name": "Mureșeni",
+   "blocks": 44,
+   "labelled": 42,
+   "with_stairs": 0
+  },
+  {
+   "name": "22 Decembrie 1989",
+   "blocks": 38,
+   "labelled": 38,
+   "with_stairs": 0
+  },
+  {
+   "name": "Podeni",
+   "blocks": 37,
+   "labelled": 32,
+   "with_stairs": 0
+  },
+  {
+   "name": "Depozitelor",
+   "blocks": 30,
+   "labelled": 18,
+   "with_stairs": 0
+  },
+  {
+   "name": "Libertății",
+   "blocks": 27,
+   "labelled": 24,
+   "with_stairs": 0
+  },
+  {
+   "name": "Aleea Carpați",
+   "blocks": 27,
+   "labelled": 22,
+   "with_stairs": 0
+  },
+  {
+   "name": "Dâmbul Pietros",
+   "blocks": 25,
+   "labelled": 24,
+   "with_stairs": 0
+  },
+  {
+   "name": "(no nearby place node)",
+   "blocks": 22,
+   "labelled": 5,
+   "with_stairs": 0
+  },
+  {
+   "name": "Valea Rece",
+   "blocks": 16,
+   "labelled": 16,
+   "with_stairs": 0
+  },
+  {
+   "name": "Rovinari",
+   "blocks": 14,
+   "labelled": 14,
+   "with_stairs": 0
+  },
+  {
+   "name": "Cornișa",
+   "blocks": 11,
+   "labelled": 11,
+   "with_stairs": 0
+  },
+  {
+   "name": "Cartierul Răsăritului",
+   "blocks": 6,
+   "labelled": 0,
+   "with_stairs": 0
+  },
+  {
+   "name": "Gară",
+   "blocks": 6,
+   "labelled": 5,
+   "with_stairs": 1
+  },
+  {
+   "name": "Belvedere",
+   "blocks": 6,
+   "labelled": 6,
+   "with_stairs": 0
+  },
+  {
+   "name": "Horgoșa",
+   "blocks": 3,
+   "labelled": 3,
+   "with_stairs": 0
+  }
+ ],
+ "osm_timestamp": "2026-10-06T21:12:28Z"
+}

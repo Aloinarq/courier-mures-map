@@ -64,6 +64,8 @@ html, body { margin: 0; height: 100%; background: #f3f4f6; color: var(--ink);
   background: var(--orange); color: #fff; font-weight: 700; font-size: 11px; line-height: 1;
   padding: 3px 6px; border-radius: 999px; border: 1.5px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35);
   pointer-events: none; }
+.stair.num span { background: #fff; color: #9a3412; border: 1.5px solid var(--orange); font-weight: 600; }
+.pp-stairs.num span { background: #fff; color: #9a3412; border: 1.5px solid var(--orange); font-weight: 600; }
 .stair.nolabel span { padding: 0; width: 9px; height: 9px; }
 .stair.ovr span { background: #7c3aed; }
 

@@ -1,5 +1,5 @@
 /* Service worker: app shell + data offline, map tiles cached as you browse / download. */
-var VERSION = "v1";
+var VERSION = "v3";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-v1";
 var SHELL_FILES = [

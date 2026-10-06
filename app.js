@@ -4,7 +4,7 @@
 
   var CITY_BOUNDS = L.latLngBounds([46.49, 24.47], [46.60, 24.66]);
   var CENTER = [46.5425, 24.5575];
-  var LABEL_MIN_ZOOM = 16, STAIR_MIN_ZOOM = 17;
+  var LABEL_MIN_ZOOM = 16, STAIR_MIN_ZOOM = 17, NUM_MIN_ZOOM = 18;
   var MAX_BLOCK_LABELS = 450, MAX_STAIR_LABELS = 450;
   var TILE_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
   var TILE_SUBDOMAINS = "abcd";
@@ -170,7 +170,7 @@
     });
     blocks.forEach(function (f) {
       var ls = {};
-      f.properties._ents.forEach(function (e) { if (e.properties.label) ls[e.properties.label] = 1; });
+      f.properties._ents.forEach(function (e) { if (e.properties.label && e.properties.label.indexOf("nr. ") !== 0) ls[e.properties.label] = 1; });
       f.properties.entrances = Object.keys(ls).sort(function (a, b) { return a.length - b.length || a.localeCompare(b, "ro", { numeric: true }); });
     });
 
@@ -315,6 +315,8 @@
     var sv = [];
     entrances.forEach(function (e) {
       var g = e.geometry.coordinates;
+      // street-number pills ("nr. 13A") only from z18; at z17 they would bury the block labels
+      if (z < NUM_MIN_ZOOM && /^nr\. /.test(e.properties.label || "")) return;
       if (b.contains([g[1], g[0]])) sv.push(e);
     });
     if (sv.length > MAX_STAIR_LABELS) {
@@ -327,8 +329,8 @@
     sv.forEach(function (e) {
       var g = e.geometry.coordinates, l = e.properties.label;
       stairLayer.addLayer(L.marker([g[1], g[0]], {
-        icon: L.divIcon({ className: "stair" + (l ? "" : " nolabel") + (e.properties.override ? " ovr" : ""),
-          html: "<span>" + esc(l ? l.replace(/^Sc\. /, "") : "") + "</span>", iconSize: [0, 0] }),
+        icon: L.divIcon({ className: "stair" + (l ? "" : " nolabel") + (l && l.indexOf("nr. ") === 0 ? " num" : "") + (e.properties.override ? " ovr" : ""),
+          html: "<span>" + esc(l ? l.replace(/^(Sc|nr)\. /, "") : "") + "</span>", iconSize: [0, 0] }),
         interactive: false, keyboard: false,
       }));
     });
@@ -358,10 +360,13 @@
     row("Szintek", p.levels);
     if (p.override && p.osm_label !== undefined) row("OSM-ben", p.osm_label || "–");
     if (p.note) row("Megjegyzés", p.note);
-    var unl = p._ents.filter(function (e) { return !e.properties.label; }).length;
+    var unl = p._ents.filter(function (e) { return !e.properties.label && !e.properties.redundant; }).length;
+    var nums = p.entrance_nums || [];
     var stairs = p.entrances && p.entrances.length
       ? '<div class="pp-stairs">' + p.entrances.map(function (s) { return "<span>" + esc(s) + "</span>"; }).join("") + "</div>"
       : '<div class="pp-sub">Nincs ismert lépcsőház-jelölés' + (unl ? " (" + unl + " jelöletlen bejárat)" : "") + ".</div>";
+    if (nums.length) stairs += '<div class="pp-sub" style="margin-top:6px">Bejáratok házszámai (lépcsőházbetű nincs az OSM-ben):</div><div class="pp-stairs num">' +
+      nums.map(function (s) { return "<span>" + esc(s) + "</span>"; }).join("") + "</div>";
     if (p.entrances && p.entrances.length && unl) stairs += '<div class="pp-sub">+ ' + unl + " jelöletlen bejárat</div>";
     var dest = p.lp || [latlng.lat, latlng.lng];
     var gmaps = "https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=" + dest[0].toFixed(6) + "," + dest[1].toFixed(6);
@@ -384,7 +389,7 @@
         var nums = fold([p.housenumber, p.block].filter(Boolean).join(" ")).split(/[\s,;/·]+/).filter(Boolean);
         return {
           f: f,
-          hay: fold([p.label, p.street, p.name, p.housenumber, p.block ? "bl " + p.block : "", p.entrances.join(" ")].join(" ")),
+          hay: fold([p.label, p.street, p.name, p.housenumber, p.block ? "bl " + p.block : "", p.entrances.join(" "), (p.entrance_nums || []).join(" ")].join(" ")),
           block: p.block ? fold(p.block).split(/[\s,]+/) : [],
           nums: nums,
         };
@@ -412,7 +417,7 @@
           if (it.nums.indexOf(t) >= 0) score += 50;
           else if (it.block.indexOf(t) >= 0) score += 40;
           else return;
-        } else if (it.hay.indexOf(t) >= 0) {
+        } else if (it.hay.indexOf(t) >= 0 || (t.length >= 5 && it.hay.indexOf(t.slice(0, -1)) >= 0)) {
           score += 10 + (new RegExp("(^|\\s)" + t.replace(/[^a-z0-9]/g, "")).test(it.hay) ? 5 : 0);
         } else return;
       }
@@ -503,6 +508,7 @@
       '<div class="sw" style="background:#3b82f6;opacity:.6;border:1px solid #1d4ed8"></div><div>Tömbház (building=apartments)</div>' +
       '<div class="sw" style="background:#9ca3af;opacity:.6;border:1px solid #6b7280"></div><div>Egyéb számozott épület</div>' +
       '<div class="sw" style="background:#ea580c;border-radius:9px"></div><div>Lépcsőház (17-es nagyítástól)</div>' +
+      '<div class="sw" style="background:#fff;border:1.5px solid #ea580c;border-radius:9px"></div><div>Bejárat, csak házszámmal (nr.)</div>' +
       '<div class="sw" style="background:#a78bfa;border-radius:9px"></div><div>Saját kiegészítés (overrides.csv)</div></div>';
     if (stats) {
       var pct = function (a, b) { return b ? Math.round(100 * a / b) + "%" : "–"; };
@@ -511,6 +517,7 @@
         '<tr><td>… számmal / jelöléssel</td><td class="n">' + stats.apartments_labelled + " (" + pct(stats.apartments_labelled, stats.apartments) + ")</td></tr>" +
         '<tr><td>… lépcsőházzal</td><td class="n">' + stats.apartments_with_stairs + " (" + pct(stats.apartments_with_stairs, stats.apartments) + ")</td></tr>" +
         '<tr><td>Bejáratok / ebből jelölt</td><td class="n">' + stats.entrances + " / " + stats.entrances_labelled + "</td></tr>" +
+        (stats.entrances_numbered != null ? '<tr><td>… csak házszámmal (nr.)</td><td class="n">' + stats.entrances_numbered + " (" + pct(stats.entrances_numbered, stats.entrances) + ")</td></tr>" : "") +
         '<tr><td>Saját kiegészítések</td><td class="n">' + overrideCount + "</td></tr></table>";
       if (stats.neighbourhoods && stats.neighbourhoods.length) {
         h += '<h3>Negyedenként</h3><table><tr><th>Negyed</th><th class="n">Blokk</th><th class="n">Számmal</th><th class="n">Lépcsőh.</th></tr>' +
