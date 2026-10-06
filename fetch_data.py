@@ -14,10 +14,14 @@ Outputs:
   data/blocks.geojson      buildings (polygons) + address points
   data/entrances.geojson   entrances, each linked to a building
   data/stats.json          coverage numbers (also printed)
+  data/roads.geojson       named/usable streets as LineStrings (our own street layer)
+  data/context.geojson     river, lakes, big parks, railways (orientation only)
+  data/raw_roads.json, data/raw_context.json   untouched Overpass responses (gitignored)
 
 Usage:
   python3 fetch_data.py              # download + process
-  python3 fetch_data.py --from-raw   # re-process data/raw_overpass.json only
+  python3 fetch_data.py --from-raw   # re-process the raw_*.json files only
+  python3 fetch_data.py --roads-only # (re)download + rebuild only roads/context, keep blocks
 
 Standard library only – no pip install needed.
 """
@@ -40,6 +44,8 @@ from collections import Counter, defaultdict
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
 RAW_PATH = os.path.join(DATA, "raw_overpass.json")
+RAW_ROADS_PATH = os.path.join(DATA, "raw_roads.json")
+RAW_CONTEXT_PATH = os.path.join(DATA, "raw_context.json")
 
 BBOX = (46.49, 24.47, 46.60, 24.66)  # south, west, north, east
 ENDPOINTS = [
@@ -71,6 +77,26 @@ QUERY = """
 out body geom qt;
 """
 
+
+ROAD_CLASSES = ("motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|"
+                "pedestrian|footway|path|track|steps|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link")
+ROADS_QUERY = """
+[out:json][timeout:{t}][maxsize:536870912];
+way["highway"~"^({classes})$"]({b});
+out tags geom qt;
+"""
+CONTEXT_QUERY = """
+[out:json][timeout:{t}][maxsize:536870912];
+(
+  way["waterway"="river"]({b});
+  way["natural"="water"]({b});
+  relation["natural"="water"]({b});
+  way["leisure"="park"]({b});
+  relation["leisure"="park"]({b});
+  way["railway"="rail"]({b});
+);
+out tags geom qt;
+"""
 
 # ----------------------------------------------------------------------------
 # Download
@@ -109,8 +135,8 @@ def _post_curl(url, query):
     return code, body
 
 
-def download():
-    query = QUERY.format(t=OVERPASS_TIMEOUT, b="{},{},{},{}".format(*BBOX))
+def download(query=None):
+    query = query or QUERY.format(t=OVERPASS_TIMEOUT, b="{},{},{},{}".format(*BBOX))
     use_curl = False
     errors = []
     for url in ENDPOINTS:
@@ -390,7 +416,45 @@ def entrance_label(t):
             if SHORT_CODE.match(core):
                 return f"Sc. {core.upper() if core.isalpha() else core}", k
             return v, k
+    # Staircase codes are almost never mapped in Targu Mures; the only per-entrance
+    # identifier OSM usually has is the street number. Show it as "nr. 4" (never as
+    # "Sc. 4": that would claim a staircase number we do not know).
+    hn = (t.get("addr:housenumber") or "").strip()
+    if hn:
+        return f"nr. {hn}", "addr:housenumber"
     return "", None
+
+
+NUM_TOKEN = re.compile(r"(\d+)\s*([A-Za-z]?)")
+
+
+def number_tokens(*values):
+    """All street numbers a building answers to: '2-6' -> {2,4,6}, '30A, 30B' -> {30A,30B}."""
+    out = set()
+    for v in values:
+        v = (v or "").replace("\u2013", "-")
+        for a, b in re.findall(r"(\d+)\s*-\s*(\d+)", v):
+            a, b = int(a), int(b)
+            if a < b and b - a <= 40:
+                out.update(str(n) for n in range(a, b + 1, 2 if (b - a) % 2 == 0 else 1))
+        for num, letter in NUM_TOKEN.findall(v):
+            out.add(num + letter.upper())
+        for m in re.finditer(r"(\d+)\s*([A-Za-z])(?:\s*[/,]\s*([A-Za-z]))+", v):  # '32 A/B'
+            for letter in re.findall(r"[A-Za-z]", v[m.start(2):m.end()]):
+                out.add(m.group(1) + letter.upper())
+    return out
+
+
+def numbers_match(a, b):
+    """Token sets match exactly, or one side is the bare number of a lettered one ('6' ~ '6A')."""
+    if a & b:
+        return True
+    base = lambda tokens: {re.sub(r"[A-Z]$", "", x) for x in tokens}
+    return bool(base(a) & {x for x in b if x.isdigit()} or {x for x in a if x.isdigit()} & base(b))
+
+
+def is_stair_label(label):
+    return bool(label) and not label.startswith("nr. ")
 
 
 # ----------------------------------------------------------------------------
@@ -484,21 +548,31 @@ def process(raw):
             method, dist = "outline", 0.0
         else:
             best = None
+            hn = (t.get("addr:housenumber") or "").strip()
+            want = number_tokens(hn) if hn else set()
             for b in grid.near(px, py, ENTRANCE_LINK_MAX_M):
                 p = b["poly"]
                 d = 0.0 if p.contains(px, py) else p.edge_distance(px, py)
+                if d > ENTRANCE_LINK_MAX_M:
+                    continue
+                # an entrance that carries a street number may only attach to a building
+                # with that number (otherwise it lands on the neighbouring block)
+                if want:
+                    if "tokens" not in b:
+                        bt = b["el"].get("tags", {})
+                        b["tokens"] = number_tokens(bt.get("addr:housenumber"), *b["extra_numbers"])
+                    if not numbers_match(want, b["tokens"]):
+                        continue
                 # prefer apartment blocks a little when distances are similar
                 score = d - (3 if b["el"]["tags"].get("building") == "apartments" else 0)
-                if d <= ENTRANCE_LINK_MAX_M and (best is None or score < best[0]):
+                if best is None or score < best[0]:
                     best = (score, d, b)
             if best:
                 target, dist = best[2], best[1]
                 method = "inside" if dist == 0 else "nearest"
         link_method[method or "none"] += 1
         bid = f"{target['el']['type'][0]}{target['el']['id']}" if target else None
-        if target is not None:
-            target.setdefault("entrances", []).append(label)
-        ent_feats.append({
+        ent_f = {
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [n["lon"], n["lat"]]},
             "properties": {
@@ -513,7 +587,10 @@ def process(raw):
                 "wheelchair": t.get("wheelchair"),
                 "tags": t,
             },
-        })
+        }
+        ent_feats.append(ent_f)
+        if target is not None:
+            target.setdefault("ent_feats", []).append(ent_f)
 
     # building features
     def sort_key(s):
@@ -534,8 +611,19 @@ def process(raw):
             derived["block_from"] = "address node(s) inside"
         if not t.get("addr:street") and b["extra_streets"]:
             t["addr:street"] = sorted(set(b["extra_streets"]))[0]
-        ents = sorted({x for x in b.get("entrances", []) if x}, key=lambda s: (len(s), s))
-        n_unlabelled = sum(1 for x in b.get("entrances", []) if not x)
+        efs = b.get("ent_feats", [])
+        # a lone entrance (or entrances that all repeat the building's own number) adds
+        # nothing on the map: keep the data but hide the duplicate pill
+        hn_b = fold(t.get("addr:housenumber"))
+        num_efs = [x for x in efs if x["properties"]["label_key"] == "addr:housenumber"]
+        if num_efs and (len(efs) == 1 or {fold(x["properties"]["housenumber"]) for x in num_efs} == {hn_b}):
+            for x in num_efs:
+                x["properties"]["label"], x["properties"]["redundant"] = "", True
+        ents = sorted({x["properties"]["label"] for x in efs if is_stair_label(x["properties"]["label"])},
+                      key=lambda s: (len(s), s))
+        ent_nums = sorted({x["properties"]["housenumber"] for x in efs
+                           if x["properties"]["label"] and not is_stair_label(x["properties"]["label"])}, key=sort_key)
+        n_unlabelled = sum(1 for x in efs if not x["properties"]["label"] and not x["properties"].get("redundant"))
         is_apts = t.get("building") == "apartments"
         kind = "address" if b.get("addr_only") else ("apartments" if is_apts else "other")
         props = {
@@ -550,6 +638,7 @@ def process(raw):
             "levels": t.get("building:levels"),
             "building": t.get("building"),
             "entrances": ents,
+            "entrance_nums": ent_nums,
             "entrances_unlabelled": n_unlabelled,
             **derived,
         }
@@ -572,6 +661,136 @@ def process(raw):
     return feats, ent_feats, places, link_method, loose_addr
 
 
+# ----------------------------------------------------------------------------
+# Roads + orientation context (our own street map, no tiles needed)
+# ----------------------------------------------------------------------------
+
+MIN_FOOTWAY_M = 15          # unnamed footway/path/steps shorter than this are noise
+ROAD_SIMPLIFY_M = 0.8       # Douglas-Peucker tolerance for roads
+CONTEXT_SIMPLIFY_M = 2.0
+MIN_PARK_M2 = 5000          # parks and squares big enough to orient by (Parcul Municipal ~11k m²)
+MIN_WATER_M2 = 2500
+MINOR_UNNAMED = {"footway", "path", "steps"}
+
+
+def path_length_m(pts):
+    return sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+
+
+def simplify_xy(pts, tol):
+    """Douglas-Peucker on [(x, y), ...] (metres); keeps the end points."""
+    if len(pts) < 3:
+        return list(range(len(pts)))
+    keep = {0, len(pts) - 1}
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        a, b = stack.pop()
+        best, idx = -1.0, None
+        for i in range(a + 1, b):
+            d = dist_point_seg(pts[i][0], pts[i][1], pts[a][0], pts[a][1], pts[b][0], pts[b][1])
+            if d > best:
+                best, idx = d, i
+        if idx is not None and best > tol:
+            keep.add(idx)
+            stack.append((a, idx))
+            stack.append((idx, b))
+    return sorted(keep)
+
+
+def simplified_lonlat(latlon, tol, digits):
+    pts = [xy(la, lo) for la, lo in latlon]
+    return [[round(latlon[i][1], digits), round(latlon[i][0], digits)] for i in simplify_xy(pts, tol)]
+
+
+def process_roads(raw):
+    feats, dropped = [], Counter()
+    for e in raw.get("elements", []):
+        t = e.get("tags", {})
+        h = t.get("highway")
+        g = [(p["lat"], p["lon"]) for p in e.get("geometry", []) if p]
+        if e["type"] != "way" or not h or len(g) < 2:
+            continue
+        if h == "service" and t.get("service") == "parking_aisle":
+            dropped["parking_aisle"] += 1
+            continue
+        pts = [xy(la, lo) for la, lo in g]
+        named = bool(t.get("name"))
+        if h in MINOR_UNNAMED and not named and path_length_m(pts) < MIN_FOOTWAY_M:
+            dropped["short unnamed footway"] += 1
+            continue
+        coords = simplified_lonlat(g, ROAD_SIMPLIFY_M, 6)
+        props = {"h": h}
+        for k, v in (("n", t.get("name")), ("r", t.get("ref")), ("o", t.get("oneway")),
+                     ("s", t.get("service")), ("a", t.get("access"))):
+            if v and v not in ("no",) :
+                props[k] = v
+        feats.append({"type": "Feature", "geometry": {"type": "LineString", "coordinates": coords}, "properties": props})
+    return feats, dropped
+
+
+def process_context(raw):
+    feats, kept = [], Counter()
+
+    def add(kind, geom, name=None):
+        props = {"k": kind}
+        if name:
+            props["n"] = name
+        feats.append({"type": "Feature", "geometry": geom, "properties": props})
+        kept[kind] += 1
+
+    for e in raw.get("elements", []):
+        t = e.get("tags", {})
+        name = t.get("name")
+        if e["type"] == "way":
+            g = [(p["lat"], p["lon"]) for p in e.get("geometry", []) if p]
+            if len(g) < 2:
+                continue
+            if t.get("waterway") == "river":
+                add("river", {"type": "LineString", "coordinates": simplified_lonlat(g, CONTEXT_SIMPLIFY_M, 5)}, name)
+            elif t.get("railway") == "rail":
+                if t.get("service") in ("yard", "siding", "spur"):
+                    continue
+                add("rail", {"type": "LineString", "coordinates": simplified_lonlat(g, CONTEXT_SIMPLIFY_M, 5)})
+            elif g[0] == g[-1] and len(g) >= 4:
+                rings = [g]
+                kind = "water" if t.get("natural") == "water" else "park"
+                area = abs(ring_area_xy([xy(la, lo) for la, lo in g]))
+                if area >= (MIN_WATER_M2 if kind == "water" else MIN_PARK_M2):
+                    add(kind, {"type": "Polygon", "coordinates": [simplified_lonlat(g, CONTEXT_SIMPLIFY_M, 5)]}, name)
+        elif e["type"] == "relation":
+            kind = "water" if t.get("natural") == "water" else ("park" if t.get("leisure") == "park" else None)
+            if not kind:
+                continue
+            outer = [[(p["lat"], p["lon"]) for p in m["geometry"] if p] for m in e.get("members", [])
+                     if m.get("type") == "way" and m.get("geometry") and m.get("role") != "inner"]
+            for ring in join_rings(outer):
+                area = abs(ring_area_xy([xy(la, lo) for la, lo in ring]))
+                if area >= (MIN_WATER_M2 if kind == "water" else MIN_PARK_M2):
+                    add(kind, {"type": "Polygon", "coordinates": [simplified_lonlat(ring, CONTEXT_SIMPLIFY_M, 5)]}, name)
+    return feats, kept
+
+
+def write_geojson(path, feats, meta):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"type": "FeatureCollection", "metadata": meta, "features": feats}, fh,
+                  ensure_ascii=False, separators=(",", ":"))
+    return os.path.getsize(path)
+
+
+def build_roads_and_context(roads_raw, context_raw, meta):
+    rf, dropped = process_roads(roads_raw)
+    cf, kept = process_context(context_raw)
+    rs = write_geojson(os.path.join(DATA, "roads.geojson"), rf, meta)
+    cs = write_geojson(os.path.join(DATA, "context.geojson"), cf, meta)
+    classes = Counter(f["properties"]["h"] for f in rf)
+    named = {f["properties"]["n"] for f in rf if f["properties"].get("n")}
+    print(f"\nroads.geojson:   {len(rf)} ways, {len(named)} distinct street names, {rs/1e6:.2f} MB  "
+          f"(dropped: {dict(dropped)})")
+    print("  by class:", dict(classes.most_common()))
+    print(f"context.geojson: {len(cf)} features {dict(kept)}, {cs/1e6:.2f} MB")
+    return {"roads": len(rf), "street_names": len(named), "roads_bytes": rs, "context_bytes": cs}
+
+
 def report(feats, ent_feats, places, link_method, loose_addr):
     polys = [f for f in feats if f["properties"]["kind"] != "address"]
     apts = [f for f in polys if f["properties"]["kind"] == "apartments"]
@@ -579,7 +798,9 @@ def report(feats, ent_feats, places, link_method, loose_addr):
     apts_lab = [f for f in apts if f["properties"]["label"]]
     apts_blk = [f for f in apts if f["properties"]["block"]]
     apts_ent = [f for f in apts if f["properties"]["entrances"]]
-    ents_lab = [f for f in ent_feats if f["properties"]["label"]]
+    apts_num = [f for f in apts if f["properties"]["entrance_nums"]]
+    ents_lab = [f for f in ent_feats if is_stair_label(f["properties"]["label"])]
+    ents_num = [f for f in ent_feats if f["properties"]["label"] and not is_stair_label(f["properties"]["label"])]
     ents_linked = [f for f in ent_feats if f["properties"]["building_id"]]
 
     def pct(a, b):
@@ -592,9 +813,11 @@ def report(feats, ent_feats, places, link_method, loose_addr):
     print(f"    … with number/label:               {len(apts_lab)}  ({pct(len(apts_lab), len(apts))})")
     print(f"    … with addr:block (Bl.):           {len(apts_blk)}  ({pct(len(apts_blk), len(apts))})")
     print(f"    … with ≥1 labelled staircase:      {len(apts_ent)}  ({pct(len(apts_ent), len(apts))})")
+    print(f"    … with entrance street numbers:    {len(apts_num)}  ({pct(len(apts_num), len(apts))})")
     print(f"Loose address points (not in a bldg):  {loose_addr}")
     print(f"Entrances:                             {len(ent_feats)}")
-    print(f"  with a label (Sc. …):                {len(ents_lab)}  ({pct(len(ents_lab), len(ent_feats))})")
+    print(f"  with a staircase label (Sc. …):      {len(ents_lab)}  ({pct(len(ents_lab), len(ent_feats))})")
+    print(f"  with only a street number (nr. …):   {len(ents_num)}  ({pct(len(ents_num), len(ent_feats))})")
     print(f"  linked to a building:                {len(ents_linked)}  ({pct(len(ents_linked), len(ent_feats))})"
           f"   [outline {link_method['outline']}, inside {link_method['inside']}, "
           f"nearest≤{ENTRANCE_LINK_MAX_M}m {link_method['nearest']}, none {link_method['none']}]")
@@ -619,12 +842,13 @@ def report(feats, ent_feats, places, link_method, loose_addr):
         p = f["properties"]
         extra = " (nr from address node)" if p.get("housenumber_from") else ""
         print(f"  {p['label']!s:28s} ← {raw}{extra}  sc: {', '.join(p['entrances']) or '–'}")
-    print("\n12 sample entrance labels:")
-    for f in rnd.sample(ents_lab, min(12, len(ents_lab))):
+    print("\n12 sample entrance labels (staircase codes first, then street numbers):")
+    pool = ents_lab + rnd.sample(ents_num, min(9, len(ents_num)))
+    for f in pool[:12]:
         t = f["properties"]["tags"]
         raw = {k: t[k] for k in ("entrance", "entrance:ref", "ref", "addr:unit", "addr:entrance", "name") if k in t}
         print(f"  {f['properties']['label']!s:10s} ← {raw}")
-    odd = [f["properties"]["label"] for f in ents_lab if not f["properties"]["label"].startswith("Sc. ")]
+    odd = [f["properties"]["label"] for f in ents_lab if not f["properties"]["label"].startswith("Sc. ")]  # e.g. free-text names
     if odd:
         print(f"Entrance labels not in 'Sc. X' form ({len(odd)}):", Counter(odd).most_common(15))
 
@@ -654,45 +878,86 @@ def report(feats, ent_feats, places, link_method, loose_addr):
         "buildings": len(polys), "buildings_labelled": len(labelled),
         "apartments": len(apts), "apartments_labelled": len(apts_lab),
         "apartments_with_block": len(apts_blk), "apartments_with_stairs": len(apts_ent),
+        "apartments_with_entrance_numbers": len(apts_num),
         "address_points": loose_addr,
-        "entrances": len(ent_feats), "entrances_labelled": len(ents_lab), "entrances_linked": len(ents_linked),
+        "entrances": len(ent_feats), "entrances_labelled": len(ents_lab), "entrances_numbered": len(ents_num),
+        "entrances_linked": len(ents_linked),
         "neighbourhoods": [{"name": n, "blocks": v[0], "labelled": v[1], "with_stairs": v[2]} for n, v in rows],
     }
 
 
+def load_or_download(path, query, label):
+    print(f"\n== {label} ==")
+    raw = download(query)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(raw, fh, ensure_ascii=False)
+    print("saved", path)
+    return raw
+
+
+def roads_queries():
+    b = "{},{},{},{}".format(*BBOX)
+    return (ROADS_QUERY.format(t=OVERPASS_TIMEOUT, b=b, classes=ROAD_CLASSES),
+            CONTEXT_QUERY.format(t=OVERPASS_TIMEOUT, b=b))
+
+
 def main():
     os.makedirs(DATA, exist_ok=True)
-    if "--from-raw" in sys.argv:
-        with open(RAW_PATH, encoding="utf-8") as fh:
-            raw = json.load(fh)
-        print(f"Re-processing {RAW_PATH} ({len(raw.get('elements', []))} elements)")
-    else:
-        raw = download()
-        with open(RAW_PATH, "w", encoding="utf-8") as fh:
-            json.dump(raw, fh, ensure_ascii=False)
-        print("saved", RAW_PATH)
+    from_raw = "--from-raw" in sys.argv
+    roads_only = "--roads-only" in sys.argv
+    q_roads, q_context = roads_queries()
 
-    feats, ent_feats, places, link_method, loose_addr = process(raw)
-    stats = report(feats, ent_feats, places, link_method, loose_addr)
+    def load(path, query, label):
+        if from_raw:
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            print(f"Re-processing {path} ({len(raw.get('elements', []))} elements)")
+            return raw
+        return load_or_download(path, query, label)
 
-    osm_ts = (raw.get("osm3s") or {}).get("timestamp_osm_base")
-    stats["osm_timestamp"] = osm_ts
-    for f in feats:
-        f.pop("_tags", None)
-    for f in ent_feats:  # keep only the tags that matter
-        f["properties"]["tags"] = {k: v for k, v in f["properties"]["tags"].items()
-                                   if k.startswith(("entrance", "ref", "addr:", "name", "level", "door"))}
-    meta = {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": osm_ts}
-    with open(os.path.join(DATA, "blocks.geojson"), "w", encoding="utf-8") as fh:
-        json.dump({"type": "FeatureCollection", "metadata": meta, "features": feats}, fh,
-                  ensure_ascii=False, separators=(",", ":"))
-    with open(os.path.join(DATA, "entrances.geojson"), "w", encoding="utf-8") as fh:
-        json.dump({"type": "FeatureCollection", "metadata": meta, "features": ent_feats}, fh,
-                  ensure_ascii=False, separators=(",", ":"))
-    with open(os.path.join(DATA, "stats.json"), "w", encoding="utf-8") as fh:
-        json.dump(stats, fh, ensure_ascii=False, indent=1)
-    print("\nwrote data/blocks.geojson, data/entrances.geojson, data/stats.json")
-    print(f"OSM data timestamp: {osm_ts}")
+    if not roads_only:
+        if from_raw:
+            with open(RAW_PATH, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            print(f"Re-processing {RAW_PATH} ({len(raw.get('elements', []))} elements)")
+        else:
+            raw = download()
+            with open(RAW_PATH, "w", encoding="utf-8") as fh:
+                json.dump(raw, fh, ensure_ascii=False)
+            print("saved", RAW_PATH)
+
+        feats, ent_feats, places, link_method, loose_addr = process(raw)
+        stats = report(feats, ent_feats, places, link_method, loose_addr)
+
+        osm_ts = (raw.get("osm3s") or {}).get("timestamp_osm_base")
+        stats["osm_timestamp"] = osm_ts
+        for f in feats:
+            f.pop("_tags", None)
+        for f in ent_feats:  # keep only the tags that matter
+            f["properties"]["tags"] = {k: v for k, v in f["properties"]["tags"].items()
+                                       if k.startswith(("entrance", "ref", "addr:", "name", "level", "door"))}
+        meta = {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": osm_ts}
+        write_geojson(os.path.join(DATA, "blocks.geojson"), feats, meta)
+        write_geojson(os.path.join(DATA, "entrances.geojson"), ent_feats, meta)
+        with open(os.path.join(DATA, "stats.json"), "w", encoding="utf-8") as fh:
+            json.dump(stats, fh, ensure_ascii=False, indent=1)
+        print("\nwrote data/blocks.geojson, data/entrances.geojson, data/stats.json")
+        print(f"OSM data timestamp: {osm_ts}")
+
+    if from_raw and not (os.path.exists(RAW_ROADS_PATH) and os.path.exists(RAW_CONTEXT_PATH)):
+        print("\n(no raw_roads.json / raw_context.json yet: run without --from-raw to fetch roads)")
+        return
+    roads_raw = load(RAW_ROADS_PATH, q_roads, "roads")
+    context_raw = load(RAW_CONTEXT_PATH, q_context, "context (river, water, parks, railways)")
+    ts = (roads_raw.get("osm3s") or {}).get("timestamp_osm_base")
+    info = build_roads_and_context(roads_raw, context_raw, {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": ts})
+    sp = os.path.join(DATA, "stats.json")
+    if os.path.exists(sp):
+        with open(sp, encoding="utf-8") as fh:
+            st = json.load(fh)
+        st.update(info)
+        with open(sp, "w", encoding="utf-8") as fh:
+            json.dump(st, fh, ensure_ascii=False, indent=1)
 
 
 if __name__ == "__main__":

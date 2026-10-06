@@ -1,3 +1,5 @@
 data/raw_overpass.json
 .DS_Store
 __pycache__/
+data/raw_roads.json
+data/raw_context.json

@@ -1,8 +1,8 @@
 {
-  "name": "Blokktérkép Marosvásárhely",
-  "short_name": "Blokkok MV",
-  "description": "Tömbházak, blokkszámok és lépcsőházak Marosvásárhelyen (OpenStreetMap)",
-  "lang": "hu",
+  "name": "Block map – Târgu Mureș",
+  "short_name": "Block map",
+  "description": "Apartment blocks, numbers and staircases in Târgu Mureș (OpenStreetMap)",
+  "lang": "en",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

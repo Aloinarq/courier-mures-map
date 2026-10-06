@@ -14,7 +14,8 @@
 html, body { margin: 0; height: 100%; background: #f3f4f6; color: var(--ink);
   font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-text-size-adjust: 100%; }
-#map { position: fixed; inset: 0; }
+#map { position: fixed; inset: 0; background: #f3f0ea; }
+.leaflet-container { background: #f3f0ea; }
 
 /* ---------- search ---------- */
 #topbar { position: fixed; top: calc(10px + var(--safe-top)); left: 10px; right: 10px; z-index: 1000;
@@ -64,6 +65,8 @@ html, body { margin: 0; height: 100%; background: #f3f4f6; color: var(--ink);
   background: var(--orange); color: #fff; font-weight: 700; font-size: 11px; line-height: 1;
   padding: 3px 6px; border-radius: 999px; border: 1.5px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35);
   pointer-events: none; }
+.stair.num span { background: #fff; color: #9a3412; border: 1.5px solid var(--orange); font-weight: 600; }
+.pp-stairs.num span { background: #fff; color: #9a3412; border: 1.5px solid var(--orange); font-weight: 600; }
 .stair.nolabel span { padding: 0; width: 9px; height: 9px; }
 .stair.ovr span { background: #7c3aed; }
 
@@ -102,3 +105,20 @@ html, body { margin: 0; height: 100%; background: #f3f4f6; color: var(--ink);
 progress { width: 100%; height: 10px; }
 .legend { display: grid; grid-template-columns: 22px 1fr; gap: 6px 8px; align-items: center; font-size: 14px; }
 .sw { width: 18px; height: 14px; border-radius: 3px; }
+
+/* ---------- own street map ---------- */
+.slbl { background: transparent; border: 0; }
+.slbl span { position: absolute; white-space: nowrap; font: 600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #57534e; letter-spacing: .1px; pointer-events: none;
+  text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
+.slbl.major span { color: #44403c; font-weight: 700; }
+.bl-controls { display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  margin-bottom: calc(10px + var(--safe-bottom)) !important; }
+.bm-toggle, .lang-pick { background: var(--card); color: var(--ink); border-radius: 999px; font-size: 13px; font-weight: 600;
+  box-shadow: 0 1px 5px rgba(0,0,0,.25); display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.bm-toggle { padding: 6px 12px 6px 8px; }
+.lang-pick { padding: 2px 4px 2px 9px; }
+.lang-pick select { border: 0; background: transparent; font: inherit; color: inherit; padding: 4px 2px; cursor: pointer; }
+.lang-globe { font-size: 14px; line-height: 1; }
+.bm-toggle input { width: 16px; height: 16px; margin: 0; }
+.chip.green { background: #dcfce7; color: #166534; }
