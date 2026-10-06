@@ -734,11 +734,34 @@
   map.on("popupclose", function () { if (hlLayer && hlLayer._origStyle) hlLayer.setStyle(hlLayer._origStyle); hlLayer = null; });
 
   // ------------------------------------------------------------------ search
+  // every number an address answers to: "29-33" -> 29, 31, 33; "32 A/B" -> 32a, 32b; "45A, 45B" -> 45a, 45b
+  function numberTokens(v) {
+    var out = {}, m;
+    v = fold(v).replace(/–/g, "-");
+    var range = /(\d+)\s*-\s*(\d+)/g;
+    while ((m = range.exec(v))) {
+      var a = +m[1], b = +m[2];
+      if (a < b && b - a <= 40) for (var n = a; n <= b; n += (b - a) % 2 ? 1 : 2) out[n] = 1;
+    }
+    var single = /(\d+)\s*([a-z]?)/g;
+    while ((m = single.exec(v))) out[m[1] + m[2]] = 1;
+    var letters = /(\d+)\s*([a-z])(?:\s*\/\s*[a-z])+/g;
+    while ((m = letters.exec(v))) m[0].replace(/[a-z]/g, function (l) { out[m[1] + l] = 1; });
+    return Object.keys(out);
+  }
+  // "31" also finds 31A, 31B (a bit lower); "31a" only finds 31A
+  function numberScore(tok, nums) {
+    if (nums.indexOf(tok) >= 0) return 50;
+    if (/^\d+$/.test(tok)) {
+      for (var i = 0; i < nums.length; i++) if (nums[i].replace(/[a-z]$/, "") === tok) return 45;
+    }
+    return 0;
+  }
   function buildSearchIndex() {
     searchIndex = blocks.filter(function (f) { var p = f.properties; return p.label || p.street || p.name; })
       .map(function (f) {
         var p = f.properties;
-        var nums = fold([p.housenumber, p.block].filter(Boolean).join(" ")).split(/[\s,;/·]+/).filter(Boolean);
+        var nums = numberTokens([p.housenumber, p.block].concat(p.entrance_nums || []).filter(Boolean).join(" "));
         return {
           f: f,
           hay: fold([p.label, p.street, p.name, p.housenumber, p.block ? "bl " + p.block : "", p.entrances.join(" "), (p.entrance_nums || []).join(" ")].join(" ")),
@@ -766,7 +789,8 @@
       for (var i = 0; i < toks.length; i++) {
         var tok = toks[i];
         if (/^\d+[a-z]?$/.test(tok)) {
-          if (it.nums.indexOf(tok) >= 0) score += 50;
+          var ns = numberScore(tok, it.nums);
+          if (ns) score += ns;
           else if (it.block.indexOf(tok) >= 0) score += 40;
           else return;
         } else if (it.hay.indexOf(tok) >= 0 || (tok.length >= 5 && it.hay.indexOf(tok.slice(0, -1)) >= 0)) {

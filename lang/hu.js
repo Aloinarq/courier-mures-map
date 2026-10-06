@@ -6,7 +6,7 @@
   "app.title": "Blokktérkép – Marosvásárhely",
   "ui.map": "Térkép",
   "ui.search": "Keresés",
-  "ui.searchPlaceholder": "Keresés: utca, szám, „bl 12”…",
+  "ui.searchPlaceholder": "Keresés: utca és szám, pl. „carpati 31”…",
   "ui.clear": "Törlés",
   "ui.info": "Információ",
   "ui.offline": "Offline letöltés",
@@ -40,7 +40,7 @@
   "popup.coords": "koordináta",
   "popup.own": "Saját kiegészítés",
 
-  "search.none": "Nincs találat. Próbáld: „ialomita 10”, „bl 12”, „bloc 3A”.",
+  "search.none": "Nincs találat. Próbáld: „moldovei 15”, „carpati 31”, „ialomita”.",
   "search.noNumber": "(szám nélkül)",
   "search.streetSub": "utca – ugrás a térképen",
   "chip.street": "utca",

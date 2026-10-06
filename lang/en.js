@@ -6,7 +6,7 @@
   "app.title": "Block map – Târgu Mureș",
   "ui.map": "Map",
   "ui.search": "Search",
-  "ui.searchPlaceholder": "Search: street, number, “bl 12”…",
+  "ui.searchPlaceholder": "Search: street and number, e.g. “carpati 31”…",
   "ui.clear": "Clear",
   "ui.info": "Information",
   "ui.offline": "Offline download",
@@ -40,7 +40,7 @@
   "popup.coords": "coordinates",
   "popup.own": "Own addition",
 
-  "search.none": "No results. Try: “ialomita 10”, “bl 12”, “bloc 3A”.",
+  "search.none": "No results. Try: “moldovei 15”, “carpati 31”, “ialomita”.",
   "search.noNumber": "(no number)",
   "search.streetSub": "street – show on the map",
   "chip.street": "street",

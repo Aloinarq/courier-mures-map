@@ -6,7 +6,7 @@
   "app.title": "Harta blocurilor – Târgu Mureș",
   "ui.map": "Hartă",
   "ui.search": "Căutare",
-  "ui.searchPlaceholder": "Caută: stradă, număr, „bl 12”…",
+  "ui.searchPlaceholder": "Caută: stradă și număr, ex. „carpati 31”…",
   "ui.clear": "Șterge",
   "ui.info": "Informații",
   "ui.offline": "Descărcare offline",
@@ -40,7 +40,7 @@
   "popup.coords": "coordonate",
   "popup.own": "Completare proprie",
 
-  "search.none": "Niciun rezultat. Încearcă: „ialomita 10”, „bl 12”, „bloc 3A”.",
+  "search.none": "Niciun rezultat. Încearcă: „moldovei 15”, „carpati 31”, „ialomita”.",
   "search.noNumber": "(fără număr)",
   "search.streetSub": "stradă – arată pe hartă",
   "chip.street": "stradă",
