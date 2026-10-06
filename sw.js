@@ -1,5 +1,5 @@
 /* Service worker: app shell + data offline, map tiles cached as you browse / download. */
-var VERSION = "v3";
+var VERSION = "v4";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-v1";
 var SHELL_FILES = [
@@ -8,7 +8,7 @@ var SHELL_FILES = [
   "vendor/leaflet/images/layers.png", "vendor/leaflet/images/layers-2x.png",
   "vendor/leaflet/images/marker-icon.png", "vendor/leaflet/images/marker-icon-2x.png", "vendor/leaflet/images/marker-shadow.png",
   "icons/icon-192.png", "icons/icon-512.png",
-  "data/blocks.geojson", "data/entrances.geojson", "data/overrides.csv", "data/stats.json",
+  "data/blocks.geojson", "data/entrances.geojson", "data/roads.geojson", "data/context.geojson", "data/overrides.csv", "data/stats.json",
 ];
 
 self.addEventListener("install", function (e) {
