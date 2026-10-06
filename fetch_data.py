@@ -668,7 +668,7 @@ def process(raw):
 MIN_FOOTWAY_M = 15          # unnamed footway/path/steps shorter than this are noise
 ROAD_SIMPLIFY_M = 0.8       # Douglas-Peucker tolerance for roads
 CONTEXT_SIMPLIFY_M = 2.0
-MIN_PARK_M2 = 20000         # only "big" parks
+MIN_PARK_M2 = 5000          # parks and squares big enough to orient by (Parcul Municipal ~11k m²)
 MIN_WATER_M2 = 2500
 MINOR_UNNAMED = {"footway", "path", "steps"}
 

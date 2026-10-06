@@ -122,5 +122,9 @@
    "with_stairs": 0
   }
  ],
- "osm_timestamp": "2026-10-06T21:12:28Z"
+ "osm_timestamp": "2026-10-06T21:12:28Z",
+ "roads": 11578,
+ "street_names": 644,
+ "roads_bytes": 2366046,
+ "context_bytes": 35365
 }
