@@ -72,6 +72,12 @@ Frissítés: `python3 fetch_data.py`, aztán `git add . && git commit -m "adatfr
 
 A „Helyzetem” gomb csak HTTPS-en (GitHub Pages) vagy localhoston működik, sima `http://192.168…` címen nem.
 
+## Nyelvek
+
+Az app angolul (alapértelmezett), magyarul és románul érhető el. A nyelvválasztó a térkép bal alsó sarkában van, és a telefon megjegyzi a választást.
+
+A szövegek a `lang/` mappában vannak: `en.js`, `hu.js`, `ro.js`. Mindhárom fájlban ugyanazoknak a kulcsoknak kell lenniük; a `{n}`, `{msg}` stb. helyőrzőket az app tölti ki. Új nyelvhez másold le az `en.js`-t (pl. `de.js`), fordítsd le, és vedd fel az `index.html`-be és az `sw.js` listájába. A „Bl.”, „Sc.” és „nr.” rövidítés minden nyelven marad, mert így van kiírva a házakon.
+
 ## Fájlok
 
 - `fetch_data.py`: OSM-letöltés (Overpass API) és feldolgozás

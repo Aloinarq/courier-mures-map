@@ -1,9 +1,10 @@
 /* Service worker: app shell + data offline, map tiles cached as you browse / download. */
-var VERSION = "v4";
+var VERSION = "v5";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-v1";
 var SHELL_FILES = [
   "./", "index.html", "app.js", "style.css", "manifest.webmanifest",
+  "lang/en.js", "lang/hu.js", "lang/ro.js",
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
   "vendor/leaflet/images/layers.png", "vendor/leaflet/images/layers-2x.png",
   "vendor/leaflet/images/marker-icon.png", "vendor/leaflet/images/marker-icon-2x.png", "vendor/leaflet/images/marker-shadow.png",
