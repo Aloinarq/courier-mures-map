@@ -1,0 +1,4 @@
+lat,lon,label,type,street,note
+# Példa (a # kezdetű sorokat a program kihagyja):
+# 46.546210,24.571830,Bl. 14,block,Strada Ialomița,festve a falon
+# 46.546105,24.571650,A,entrance,,hátsó bejárat

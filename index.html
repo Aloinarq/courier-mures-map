@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1d4ed8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Blokkok MV">
+<title>Blokktérkép Marosvásárhely</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="map" role="application" aria-label="Térkép"></div>
+
+<div id="topbar">
+  <div id="searchwrap">
+    <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false"
+           placeholder="Keresés: utca, szám, „bl 12”…" aria-label="Keresés">
+    <button id="qclear" aria-label="Törlés" hidden>×</button>
+  </div>
+  <ul id="results" hidden></ul>
+</div>
+
+<div id="fabs">
+  <button id="btn-info" class="fab" aria-label="Információ" title="Információ">i</button>
+  <button id="btn-offline" class="fab" aria-label="Offline letöltés" title="Térkép letöltése offline használatra">⤓</button>
+  <button id="btn-locate" class="fab primary" aria-label="Helyzetem" title="Helyzetem">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+  </button>
+</div>
+
+<div id="toast" hidden></div>
+
+<div id="sheet" hidden>
+  <div class="sheet-card">
+    <button class="sheet-close" aria-label="Bezárás">×</button>
+    <div id="sheet-body"></div>
+  </div>
+</div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
