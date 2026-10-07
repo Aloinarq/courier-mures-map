@@ -133,5 +133,6 @@
   "traffic.fail": "Live traffic isn't loading right now – check your connection.",
   "legend.trafficSlow": "Traffic: slower than usual",
   "legend.trafficJam": "Traffic: heavy",
-  "legend.trafficStop": "Traffic: standing still"
+  "legend.trafficStop": "Traffic: standing still",
+  "nav.recenter": "Re-center"
 };

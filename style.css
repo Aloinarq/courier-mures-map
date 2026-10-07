@@ -175,6 +175,11 @@ details.more[open] summary::after { content: " ↑"; }
 .navstrip .summary { flex: 1; }
 .navstrip .summary .big { font-size: 34px; }
 
+.recenter { position: fixed; z-index: 1000; left: 12px; bottom: calc(var(--sheet-h, 0px) + 14px); display: inline-flex; align-items: center; gap: 8px;
+  height: 48px; padding: 0 18px 0 14px; border: 0; border-radius: 999px; background: var(--plate); color: #fff; font: 500 16px/1 var(--font);
+  box-shadow: inset 0 0 0 3px var(--plate), inset 0 0 0 5px var(--plate-line), var(--shadow); animation: drop .3s var(--ease-out); }
+.recenter svg { width: 20px; height: 20px; fill: #fff; stroke: none; }
+
 /* ---------- first-visit location card ---------- */
 .intro { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; align-items: center; margin-right: 36px; }
 .intro .pin { grid-row: span 2; width: 66px; height: 66px; display: grid; place-items: center; }
@@ -230,7 +235,9 @@ body.navigating #toast { top: calc(150px + var(--safe-top)); }
   text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
 .slbl.major span { color: #3f3a36; }
 
-/* you are here: enamel puck with a signal heading cone */
+/* you are here: enamel puck with a signal heading cone; glides between GPS fixes */
+.leaflet-marker-icon.me { transition: transform .9s linear; }
+.no-glide .leaflet-marker-icon.me { transition: none; }
 .me-wrap { position: absolute; left: -22px; top: -22px; width: 44px; height: 44px; }
 .me-cone { position: absolute; inset: -18px; border-radius: 50%; opacity: 0; transition: transform .4s linear, opacity .3s;
   background: conic-gradient(from -28deg, rgba(255, 95, 20, .55), rgba(255, 95, 20, 0) 56deg, rgba(255, 95, 20, 0) 304deg, rgba(255, 95, 20, .55));

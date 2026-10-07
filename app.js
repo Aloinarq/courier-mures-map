@@ -1000,18 +1000,20 @@
     setLocBtn();
   }
   function onFix(p) {
-    var c = p.coords, ll = [c.latitude, c.longitude], prev = loc.pos, first = !prev;
+    var c = p.coords, ll = [c.latitude, c.longitude], prev = loc.pos, first = !prev, now = Date.now();
     var moved = prev ? BlokkRouter.dist(prev, ll) : 0;
-    if (c.heading != null && !isNaN(c.heading) && (c.speed || 0) > 0.8) loc.heading = c.heading;
+    // speed (m/s) for the auto zoom: the phone's own value, else worked out from the last fix
+    if (c.speed != null && !isNaN(c.speed)) loc.speed = c.speed;
+    else if (prev && now - loc.last > 300 && now - loc.last < 10000) loc.speed = moved / ((now - loc.last) / 1000);
+    if (c.heading != null && !isNaN(c.heading) && (loc.speed || 0) > 0.8) loc.heading = c.heading;
     else if (prev && moved > 6 && c.accuracy < 30) loc.heading = BlokkRouter.bearing(prev, ll);
-    loc.pos = ll; loc.acc = c.accuracy || 0; loc.last = Date.now(); loc.denied = false;
+    loc.pos = ll; loc.shown = ll; loc.acc = c.accuracy || 0; loc.last = now; loc.denied = false;
+    flushWaiting(false);
+    if (nav.active) updateNav();  // snaps the shown position onto the route
     drawMe();
     if (first && !CITY_BOUNDS.pad(0.3).contains(ll)) { loc.follow = false; toast(t("loc.outside"), 7000); }
-    else if (first && loc.follow) map.setView(ll, Math.max(map.getZoom(), 17));
-    else if (loc.follow) map.panTo(ll, { animate: true, duration: 0.5 });
+    else if (loc.follow) followCamera(first);
     setLocBtn();
-    flushWaiting(false);
-    if (nav.active) updateNav();
   }
   function onLocError(e) {
     if (e.code === 1) {
@@ -1024,35 +1026,92 @@
     }
   }
   function drawMe() {
+    var pos = loc.shown || loc.pos;
+    var heading = nav.active && loc.navBearing != null ? loc.navBearing : loc.heading;
     if (!loc.marker) {
       loc.circle = L.circle(loc.pos, { renderer: routeCanvas, radius: loc.acc, color: "#15387a", weight: 1, opacity: 0.35,
         fillColor: "#15387a", fillOpacity: 0.07, interactive: false }).addTo(map);
-      loc.marker = L.marker(loc.pos, {
+      loc.marker = L.marker(pos, {
         icon: L.divIcon({ className: "me", iconSize: [0, 0],
           html: '<div class="me-wrap"><div class="me-cone"></div><div class="me-pulse"></div><div class="me-dot"></div></div>' }),
         interactive: false, keyboard: false, zIndexOffset: 2000,
       }).addTo(map);
     } else {
-      loc.marker.setLatLng(loc.pos);
+      loc.marker.setLatLng(pos);
       loc.circle.setLatLng(loc.pos).setRadius(loc.acc);
     }
     var el = loc.marker.getElement();
     if (!el) return;
     el.classList.remove("stale");
-    el.classList.toggle("has-heading", loc.heading != null);
-    if (loc.heading != null) el.querySelector(".me-cone").style.transform = "rotate(" + loc.heading.toFixed(0) + "deg)";
+    el.classList.toggle("has-heading", heading != null);
+    if (heading != null) el.querySelector(".me-cone").style.transform = "rotate(" + heading.toFixed(0) + "deg)";
   }
   setInterval(function () {  // grey the dot when the phone stops reporting
     if (loc.marker && Date.now() - loc.last > 30000 && loc.marker.getElement()) loc.marker.getElement().classList.add("stale");
   }, 10000);
+  // ---------- camera: keeps the dot in view like a navigation app
+  // Navigating: the dot sits low in the free part of the screen, opposite the direction of travel, so more
+  // road ahead is visible; zoom follows speed. Otherwise: just keep the dot centred.
+  var cam = { want: null, votes: 0 };
+  function navZoom() {
+    var v = loc.speed || 0;                      // m/s
+    return v > 14 ? 16 : v > 5 ? 17 : 18;        // > 50 km/h, > 18 km/h, slower
+  }
+  function followCamera(jump) {
+    var pos = loc.shown || loc.pos;
+    if (!pos) return;
+    var size = map.getSize(), z = map.getZoom();
+    var top = nav.active ? $("navbar").getBoundingClientRect().bottom + 12 : $("topbar").getBoundingClientRect().bottom + 8;
+    var bottom = size.y - (sheetEl.hidden ? 0 : sheetEl.offsetHeight);
+    if (bottom - top < 120) { top = 0; bottom = size.y; }
+    var at = L.point(size.x / 2, (top + bottom) / 2);
+    if (nav.active) {
+      var want = navZoom();
+      if (want === z) cam.votes = 0;
+      else {
+        cam.votes = cam.want === want ? cam.votes + 1 : 1;
+        cam.want = want;
+        if (cam.votes >= 3 || jump) { z = want; cam.votes = 0; }  // three fixes in a row, so a red light doesn't zoom in
+      }
+      var h = loc.navBearing != null ? loc.navBearing : loc.heading;
+      if (h != null) {
+        var k = 0.27 * Math.min(size.x, bottom - top), r = h * Math.PI / 180;
+        at = at.add(L.point(-Math.sin(r) * k, Math.cos(r) * k));
+      }
+    } else if (jump) z = Math.max(z, 17);
+    var center = map.unproject(map.project(pos, z).add(size.divideBy(2)).subtract(at), z);
+    if (jump || z !== map.getZoom()) map.setView(center, z, { animate: true });
+    else map.panTo(center, { animate: true, duration: 0.9, easeLinearity: 1, noMoveStart: true });
+  }
+  // touching the map pauses following; while navigating it comes back by itself after a quiet spell
+  var RESUME_MS = 10000, resumeTimer = null, recenterBtn = $("btn-recenter");
+  function showRecenter() { recenterBtn.hidden = !(nav.active && !loc.follow && loc.pos); }
+  function pauseFollow() {
+    if (loc.follow) { loc.follow = false; setLocBtn(); }
+    clearTimeout(resumeTimer);
+    if (nav.active) resumeTimer = setTimeout(resumeFollow, RESUME_MS);
+    showRecenter();
+  }
+  function resumeFollow() {
+    clearTimeout(resumeTimer);
+    if (!loc.pos) return;
+    loc.follow = true;
+    setLocBtn(); showRecenter();
+    followCamera(true);
+  }
+  ["touchstart", "mousedown", "wheel"].forEach(function (ev) {
+    map.getContainer().addEventListener(ev, function () { if (nav.active || loc.follow) pauseFollow(); }, { passive: true });
+  });
+  recenterBtn.addEventListener("click", resumeFollow);
   locBtn.addEventListener("click", function () {
     if (loc.watchId === null) { startLocation(true); return; }
     if (!loc.pos) return;
-    loc.follow = !loc.follow || nav.active;
-    if (loc.follow) map.setView(loc.pos, Math.max(map.getZoom(), nav.active ? 17 : 16));
-    setLocBtn();
+    if (loc.follow && !nav.active) { loc.follow = false; setLocBtn(); return; }
+    resumeFollow();
   });
-  map.on("dragstart", function () { if (loc.follow) { loc.follow = false; setLocBtn(); } });
+  // no gliding while Leaflet re-positions the dot for a zoom
+  map.on("zoomstart", function () { map.getContainer().classList.add("no-glide"); });
+  map.on("zoomend", function () { setTimeout(function () { map.getContainer().classList.remove("no-glide"); }, 60); });
 
   // first visit: explain before the browser asks; a site that already has permission just starts
   function initLocation() {
@@ -1252,16 +1311,18 @@
     document.body.classList.add("navigating");
     $("navbar").hidden = false;
     resEl.hidden = true;
-    loc.follow = true;
-    setLocBtn();
-    map.setView(loc.pos, route.mode === "foot" ? 18 : 17);
     openSheet(navSpec());
     updateNav();
+    drawMe();
+    resumeFollow();
     requestWakeLock();
   }
   function endNav(arrived) {
     var dest = route.dest;
     nav.active = false;
+    clearTimeout(resumeTimer);
+    loc.shown = loc.pos; loc.navBearing = null;
+    recenterBtn.hidden = true;
     document.body.classList.remove("navigating");
     $("navbar").hidden = true;
     releaseWakeLock();
@@ -1311,6 +1372,10 @@
       }
     } else nav.off = 0;
     nav.seg = pr.seg;
+    // on the route: show the dot on the line, pointing along it (as navigation apps do)
+    var cc = route.res.coords, onRoute = pr.d < 25;
+    loc.shown = onRoute ? pr.at : loc.pos;
+    loc.navBearing = onRoute ? BlokkRouter.bearing(cc[pr.seg], cc[Math.min(pr.seg + 1, cc.length - 1)]) : null;
     var total = route.res.distance, left = Math.max(0, total - pr.along);
     if (left < 20 || BlokkRouter.dist(loc.pos, route.dest.at) < 20) { endNav(true); return; }
     var steps = route.res.steps, next = null, after = null;
@@ -1412,7 +1477,7 @@
     });
   }
 
-  setBasemap(readPref(PREF.basemap) === "1", false);
+  setBasemap(readPref(PREF.basemap) !== "0", false);  // on by default; switched off only when the user did
   setTraffic(readPref(PREF.traffic) !== "0", false);  // on by default when a key is configured
   initLocation();
 
