@@ -219,13 +219,13 @@ body.navigating #toast { top: calc(150px + var(--safe-top)); }
 
 /* ---------- map labels ---------- */
 .lbl, .stair, .slbl, .me, .dest-pin { background: transparent; border: 0; }
-.lbl span { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; pointer-events: none;
+.lbl span { position: absolute; transform: translate(-50%, -50%) rotate(var(--bearing, 0deg)); white-space: nowrap; pointer-events: none;
   font: 700 13px/1 var(--font); color: var(--plate-deep);
   text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 5px #fff; }
 .lbl.other span { color: #374151; font-size: 12px; font-weight: 500; }
 .lbl.z18 span { font-size: 15px; }
 .lbl.ovr span { color: #5b21b6; }
-.stair span { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; pointer-events: none;
+.stair span { position: absolute; transform: translate(-50%, -50%) rotate(var(--bearing, 0deg)); white-space: nowrap; pointer-events: none;
   background: var(--signal); color: #fff; font: 700 11.5px/1 var(--font);
   padding: 3px 6px 2px; border-radius: 999px; border: 1.5px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
 .stair.num span { background: #fff; color: var(--signal-deep); border: 1.5px solid var(--signal); }
@@ -235,7 +235,16 @@ body.navigating #toast { top: calc(150px + var(--safe-top)); }
   text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
 .slbl.major span { color: #3f3a36; }
 
-/* you are here: enamel puck with a signal heading cone; glides between GPS fixes */
+/* heading-up navigation: the map element itself is turned (see enterRotation in app.js) */
+#map.rotated { position: fixed; inset: auto; will-change: transform; }
+
+/* you are here: enamel puck with a signal heading cone; glides between GPS fixes.
+   While navigating it becomes a triangle that points the way you are going. */
+.me-arrow { display: none; position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; transition: transform .7s linear; }
+.me-arrow svg { width: 40px; height: 40px; fill: var(--plate); stroke: #fff; stroke-width: 3; stroke-linejoin: round;
+  filter: drop-shadow(0 2px 4px rgba(12, 36, 84, .55)); }
+.me.nav .me-arrow { display: block; }
+.me.nav .me-dot, .me.nav .me-pulse, .me.nav .me-cone { display: none; }
 .leaflet-marker-icon.me { transition: transform .9s linear; }
 .no-glide .leaflet-marker-icon.me { transition: none; }
 .me-wrap { position: absolute; left: -22px; top: -22px; width: 44px; height: 44px; }
@@ -247,7 +256,7 @@ body.navigating #toast { top: calc(150px + var(--safe-top)); }
   box-shadow: 0 0 0 3px #fff, 0 2px 8px rgba(12, 36, 84, .6); }
 .me-pulse { position: absolute; left: 11px; top: 11px; width: 22px; height: 22px; border-radius: 50%; background: rgba(21, 56, 122, .35); animation: pulse 2.2s ease-out infinite; }
 .me.stale .me-dot { background: #8a93a6; }
-.dest-pin .pin-plate { position: absolute; transform: translate(-50%, -100%); padding: 5px 10px 4px; margin-top: -10px; border-radius: 9px;
+.dest-pin .pin-plate { position: absolute; transform: translate(-50%, -100%) rotate(var(--bearing, 0deg)); transform-origin: 50% calc(100% + 10px); padding: 5px 10px 4px; margin-top: -10px; border-radius: 9px;
   background: var(--signal); color: #fff; font: 700 17px/1 var(--font); white-space: nowrap;
   box-shadow: inset 0 0 0 2px var(--signal), inset 0 0 0 3.5px #fff, 0 6px 14px -6px rgba(0,0,0,.6); }
 .dest-pin .pin-plate::after { content: ""; position: absolute; left: 50%; bottom: -7px; margin-left: -7px; border: 7px solid transparent; border-bottom: 0; border-top-color: var(--signal); }

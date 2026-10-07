@@ -145,6 +145,20 @@
     maxBounds: CITY_BOUNDS.pad(0.6), maxBoundsViscosity: 0.8,
   });
   var canvas = L.canvas({ padding: 0.4, tolerance: 6 });
+  // heading-up while navigating: the map element is turned with CSS around the user's position.
+  // rot.on = turned; rot.shown = the angle the map is turned by (deg, unwrapped); labels counter-rotate by it.
+  var rot = { on: false, shown: 0, pivot: null, D: 0 };
+  function rotBox(cx, cy, w, h) {  // container-space box of a label that is upright on screen
+    if (!rot.on) return [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2];
+    var r = rot.shown * Math.PI / 180, c = Math.abs(Math.cos(r)), sn = Math.abs(Math.sin(r));
+    var bw = w * c + h * sn, bh = w * sn + h * c;
+    return [cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2];
+  }
+  function toScreen(p) {  // container point -> viewport point
+    if (!rot.on) return p;
+    var r = -rot.shown * Math.PI / 180, dx = p.x - rot.D / 2, dy = p.y - rot.D / 2;
+    return L.point(rot.pivot.x + dx * Math.cos(r) - dy * Math.sin(r), rot.pivot.y + dx * Math.sin(r) + dy * Math.cos(r));
+  }
   // our own street map sits between the (optional) tiles and the buildings
   map.createPane("context").style.zIndex = 320;
   map.createPane("roads").style.zIndex = 350;
@@ -384,6 +398,12 @@
     var z = map.getZoom();
     if (z < 15 || !roadGroups.length) return;
     var vb = map.getBounds(), size = map.getSize();
+    var vtop = 90, vbottom = size.y - 30, vw = size.x;
+    if (rot.on) { vtop = $("navbar").getBoundingClientRect().bottom + 8; vbottom = window.innerHeight - sheetEl.offsetHeight - 10; vw = window.innerWidth; }
+    function inView(p) {
+      var v = toScreen(p);
+      return v.x > 20 && v.y > vtop && v.x < vw - (rot.on ? 84 : 20) && v.y < vbottom;
+    }
     var byName = {};
     roadChains.forEach(function (ch) {
       if (z < 16 && !ch.major) return;
@@ -399,7 +419,7 @@
       };
       for (var i = 0; i < c.length; i++) {
         var p = map.latLngToContainerPoint([c[i][1], c[i][0]]);
-        if (p.x > 20 && p.y > 90 && p.x < size.x - 20 && p.y < size.y - 30) pts.push(p);
+        if (inView(p)) pts.push(p);
         else if (pts.length) flush();
       }
       if (pts.length) flush();
@@ -418,7 +438,7 @@
     cands.sort(function (a, b) { return (b.major - a.major) || (b.len - a.len); });
     var taken = boxes, n = 0;
     // keep names out from under the round buttons (bottom right) and the basemap switch (bottom left)
-    taken.push([size.x - 84, size.y - 330, size.x, size.y], [0, size.y - 110, 210, size.y]);
+    if (!rot.on) taken.push([size.x - 84, size.y - 330, size.x, size.y], [0, size.y - 110, 210, size.y]);
     streetStats = { candidates: cands.length, tooShort: 0, collided: 0, placed: 0 };
     for (var i = 0; i < cands.length && n < MAX_STREET_LABELS; i++) {
       var cd = cands[i], label = shortName(cd.name), w = textW(label) + 6, h = 15;
@@ -435,6 +455,12 @@
       if (!spot) { streetStats.collided++; continue; }
       taken.push(spot.box); n++; streetStats.placed++;
       var a = spot.at.angle, p = spot.at.p;
+      if (rot.on) {  // keep the text upright on the turned screen
+        var B = rot.shown * Math.PI / 180, sa = a - B;
+        sa = Math.atan2(Math.sin(sa), Math.cos(sa));
+        if (sa > Math.PI / 2) sa -= Math.PI; else if (sa < -Math.PI / 2) sa += Math.PI;
+        a = sa + B;
+      }
       var deg = a * 180 / Math.PI;
       streetLabelLayer.addLayer(L.marker(map.containerPointToLatLng(p), {
         pane: "streetLabels", interactive: false, keyboard: false,
@@ -643,7 +669,7 @@
       var p = f.properties;
       var cls = "lbl" + (p.kind === "apartments" ? "" : " other") + (z >= 18 ? " z18" : "") + (p.override ? " ovr" : "");
       var cp = map.latLngToContainerPoint(p.lp), hw = textD(p.label, z >= 18 ? 15 : 13) / 2 + 3;
-      var box = [cp.x - hw, cp.y - 9, cp.x + hw, cp.y + 9];
+      var box = rotBox(cp.x, cp.y, 2 * hw, 18);
       var mk = L.marker(p.lp, {
         icon: L.divIcon({ className: cls, html: "<span>" + esc(p.label) + "</span>", iconSize: [0, 0] }),
         interactive: false, keyboard: false,
@@ -672,7 +698,7 @@
     sv.forEach(function (e) {
       var g = e.geometry.coordinates, l = e.properties.label;
       var sp = map.latLngToContainerPoint([g[1], g[0]]), sw = l ? textD(l.replace(/^(Sc|nr)\. /, ""), 11.5) / 2 + 8 : 6;
-      boxes.push([sp.x - sw, sp.y - 9, sp.x + sw, sp.y + 9]);
+      boxes.push(rotBox(sp.x, sp.y, 2 * sw, 18));
       stairLayer.addLayer(L.marker([g[1], g[0]], {
         icon: L.divIcon({ className: "stair" + (l ? "" : " nolabel") + (l && l.indexOf("nr. ") === 0 ? " num" : "") + (e.properties.override ? " ovr" : ""),
           html: "<span>" + esc(l ? l.replace(/^(Sc|nr)\. /, "") : "") + "</span>", iconSize: [0, 0] }),
@@ -1033,7 +1059,8 @@
         fillColor: "#15387a", fillOpacity: 0.07, interactive: false }).addTo(map);
       loc.marker = L.marker(pos, {
         icon: L.divIcon({ className: "me", iconSize: [0, 0],
-          html: '<div class="me-wrap"><div class="me-cone"></div><div class="me-pulse"></div><div class="me-dot"></div></div>' }),
+          html: '<div class="me-wrap"><div class="me-cone"></div><div class="me-pulse"></div><div class="me-dot"></div>' +
+            '<div class="me-arrow"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 34 35 20 27.5 6 35Z"/></svg></div></div>' }),
         interactive: false, keyboard: false, zIndexOffset: 2000,
       }).addTo(map);
     } else {
@@ -1044,7 +1071,11 @@
     if (!el) return;
     el.classList.remove("stale");
     el.classList.toggle("has-heading", heading != null);
-    if (heading != null) el.querySelector(".me-cone").style.transform = "rotate(" + heading.toFixed(0) + "deg)";
+    el.classList.toggle("nav", nav.active);
+    if (heading != null) {
+      el.querySelector(".me-cone").style.transform = "rotate(" + heading.toFixed(0) + "deg)";
+      el.querySelector(".me-arrow").style.transform = "rotate(" + heading.toFixed(1) + "deg)";
+    }
   }
   setInterval(function () {  // grey the dot when the phone stops reporting
     if (loc.marker && Date.now() - loc.last > 30000 && loc.marker.getElement()) loc.marker.getElement().classList.add("stale");
@@ -1057,9 +1088,65 @@
     var v = loc.speed || 0;                      // m/s
     return v > 14 ? 16 : v > 5 ? 17 : 18;        // > 50 km/h, > 18 km/h, slower
   }
+  var MAP_EL = map.getContainer(), RENDERERS = [canvas, ctxCanvas, roadCanvas, routeCanvas];
+  function enterRotation() {
+    if (rot.on) return;
+    // the visible map strip lies between the turn banner and the sheet; the user sits low in it
+    var w = window.innerWidth, top = $("navbar").getBoundingClientRect().bottom + 8;
+    var bottom = window.innerHeight - (sheetEl.hidden ? 0 : sheetEl.offsetHeight);
+    if (bottom - top < 160) { top = 0; bottom = window.innerHeight; }
+    var px = w / 2, py = top + 0.72 * (bottom - top);
+    // a square around the user, big enough that turning it never uncovers a corner of that strip
+    var R = Math.max(Math.hypot(px, py - top), Math.hypot(px, bottom - py)), D = Math.ceil(2 * R + 48);
+    rot.on = true; rot.pivot = L.point(px, py); rot.D = D; rot.shown = 0;
+    MAP_EL.classList.add("rotated");
+    MAP_EL.style.left = (px - D / 2) + "px"; MAP_EL.style.top = (py - D / 2) + "px";
+    MAP_EL.style.width = D + "px"; MAP_EL.style.height = D + "px";
+    MAP_EL.style.right = MAP_EL.style.bottom = "auto";
+    RENDERERS.forEach(function (r) { r.options.padding = 0.1; });  // keeps the canvases within phone limits
+    map.invalidateSize({ pan: false });
+  }
+  function exitRotation() {
+    if (!rot.on) return;
+    var pos = loc.shown || loc.pos, z = map.getZoom(), pivot = rot.pivot;
+    rot.on = false; rot.shown = 0;
+    MAP_EL.classList.remove("rotated");
+    ["left", "top", "width", "height", "right", "bottom", "transform", "transition"].forEach(function (k) { MAP_EL.style[k] = ""; });
+    MAP_EL.style.removeProperty("--bearing");
+    RENDERERS.forEach(function (r) { r.options.padding = r === routeCanvas ? 0.5 : 0.4; });
+    map.invalidateSize({ pan: false });
+    if (pos) map.setView(map.unproject(map.project(pos, z).add(map.getSize().divideBy(2)).subtract(pivot), z), z, { animate: false });
+  }
+  function setBearing(b, animate) {
+    var d = ((b - rot.shown) % 360 + 540) % 360 - 180;  // shortest way round: 359° -> 2° turns 3°
+    if (animate && Math.abs(d) < 3) return;
+    rot.shown += d;
+    MAP_EL.style.transition = animate ? "transform .7s linear" : "none";
+    MAP_EL.style.transform = "rotate(" + (-rot.shown).toFixed(1) + "deg)";
+    MAP_EL.style.setProperty("--bearing", rot.shown.toFixed(1) + "deg");
+  }
+  window.addEventListener("resize", function () {
+    if (rot.on) { exitRotation(); enterRotation(); followCamera(true); }
+  });
   function followCamera(jump) {
     var pos = loc.shown || loc.pos;
     if (!pos) return;
+    if (nav.active && loc.follow) {
+      enterRotation();
+      var zr = map.getZoom(), wantR = navZoom();
+      if (wantR === zr) cam.votes = 0;
+      else {
+        cam.votes = cam.want === wantR ? cam.votes + 1 : 1;
+        cam.want = wantR;
+        if (cam.votes >= 3 || jump) { zr = wantR; cam.votes = 0; }
+      }
+      var hr = loc.navBearing != null ? loc.navBearing : loc.heading;
+      if (hr != null) setBearing(hr, !jump);
+      // the map centre is the user (the turned square is centred on them)
+      if (jump || zr !== map.getZoom()) map.setView(pos, zr, { animate: !jump });
+      else map.panTo(pos, { animate: true, duration: 0.9, easeLinearity: 1, noMoveStart: true });
+      return;
+    }
     var size = map.getSize(), z = map.getZoom();
     var top = nav.active ? $("navbar").getBoundingClientRect().bottom + 12 : $("topbar").getBoundingClientRect().bottom + 8;
     var bottom = size.y - (sheetEl.hidden ? 0 : sheetEl.offsetHeight);
@@ -1088,6 +1175,7 @@
   function showRecenter() { recenterBtn.hidden = !(nav.active && !loc.follow && loc.pos); }
   function pauseFollow() {
     if (loc.follow) { loc.follow = false; setLocBtn(); }
+    exitRotation();  // looking around happens north-up
     clearTimeout(resumeTimer);
     if (nav.active) resumeTimer = setTimeout(resumeFollow, RESUME_MS);
     showRecenter();
@@ -1100,7 +1188,7 @@
     followCamera(true);
   }
   ["touchstart", "mousedown", "wheel"].forEach(function (ev) {
-    map.getContainer().addEventListener(ev, function () { if (nav.active || loc.follow) pauseFollow(); }, { passive: true });
+    map.getContainer().addEventListener(ev, function () { if (nav.active || loc.follow) pauseFollow(); }, { passive: true, capture: true });
   });
   recenterBtn.addEventListener("click", resumeFollow);
   locBtn.addEventListener("click", function () {
@@ -1323,6 +1411,8 @@
     clearTimeout(resumeTimer);
     loc.shown = loc.pos; loc.navBearing = null;
     recenterBtn.hidden = true;
+    exitRotation();
+    if (loc.marker) drawMe();  // back from the triangle to the dot
     document.body.classList.remove("navigating");
     $("navbar").hidden = true;
     releaseWakeLock();
