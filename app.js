@@ -6,12 +6,13 @@
   var CENTER = [46.5425, 24.5575];
   var LABEL_MIN_ZOOM = 16, STAIR_MIN_ZOOM = 17, NUM_MIN_ZOOM = 18;
   var MAX_BLOCK_LABELS = 450, MAX_STAIR_LABELS = 450, MAX_STREET_LABELS = 70;
-  var TILE_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
-  var TILE_SUBDOMAINS = "abcd";
-  var TILE_CACHE = "tiles-v1";
+  // OpenStreetMap's own tiles: free and keyless. Their usage policy forbids bulk downloading, so
+  // tiles are only cached as they are viewed (sw.js); our own street layer works without them.
+  var TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   var OSM_ATTRIB = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
-  var CARTO_ATTRIB = '&copy; <a href="https://carto.com/attributions">CARTO</a>';
-  var TILE_PREF_KEY = "blokk.basemap";
+  var PREF = { basemap: "blokk.basemap", mode: "blokk.mode", locIntro: "blokk.locIntro" };
+  function readPref(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function writePref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
 
   // ------------------------------------------------------------------ i18n (lang/*.js)
   var LANGS = window.BLOKK_LANG || {}, LANG_KEY = "blokk.lang", DEFAULT_LANG = "en";
@@ -153,78 +154,29 @@
   map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
   map.attributionControl.addAttribution(OSM_ATTRIB);
 
-  // ---------- optional CARTO tiles underneath
-  var tiles = L.tileLayer(TILE_URL, {
-    subdomains: TILE_SUBDOMAINS, maxZoom: 19, maxNativeZoom: 18, attribution: CARTO_ATTRIB,
-    crossOrigin: true, detectRetina: false,
-  });
-  function readPref() { try { return localStorage.getItem(TILE_PREF_KEY); } catch (e) { return null; } }
-  function writePref(v) { try { localStorage.setItem(TILE_PREF_KEY, v); } catch (e) { /* private mode */ } }
-  var tileErrors = 0;
-  tiles.on("tileerror", function () {
-    if (++tileErrors === 4) toast(t("toast.tilesFail"), 5000);
-  });
-  // CARTO answers keyless requests with one identical "API key required" watermark tile.
-  // Two different tiles with identical bytes = placeholder, so switch the layer off again.
-  function probeTiles() {
-    function get(x, y) {
-      return fetch(tileUrl(15, x, y), { mode: "cors" }).then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.arrayBuffer();
-      });
-    }
-    var z15x = lon2x(CENTER[1], 15), z15y = lat2y(CENTER[0], 15);
-    return Promise.all([get(z15x, z15y), get(z15x + 1, z15y + 1)]).then(function (b) {
-      if (b[0].byteLength !== b[1].byteLength) return true;
-      var a = new Uint8Array(b[0]), c = new Uint8Array(b[1]);
-      for (var i = 0; i < a.length; i++) if (a[i] !== c[i]) return true;
-      return false;
-    });
-  }
-  function setBasemap(on, remember) {
-    var cb = $("bm-toggle");
-    if (cb) cb.checked = on;
-    document.body.classList.toggle("no-tiles", !on);
-    if (remember) writePref(on ? "1" : "0");
-    if (!on) { if (map.hasLayer(tiles)) map.removeLayer(tiles); return; }
-    tileErrors = 0;
-    if (!map.hasLayer(tiles)) tiles.addTo(map);
-    probeTiles().then(function (ok) {
-      if (ok) return;
-      if (map.hasLayer(tiles)) map.removeLayer(tiles);
-      if (cb) cb.checked = false;
-      document.body.classList.add("no-tiles");
-      toast(t("toast.cartoWatermark"), 7000);
-    }).catch(function () { /* blocked or offline: tileerror handles the message */ });
-  }
-  var BasemapControl = L.Control.extend({
-    options: { position: "bottomleft" },
-    onAdd: function () {
-      var box = L.DomUtil.create("div", "bl-controls");
-      var opts = Object.keys(LANGS).map(function (code) {
-        return '<option value="' + code + '"' + (code === lang ? " selected" : "") + ">" + esc(LANGS[code]["lang.name"] || code) + "</option>";
-      }).join("");
-      box.innerHTML = '<label class="lang-pick"><span class="lang-globe" aria-hidden="true">🌐</span>' +
-        '<select id="lang-select" data-i18n-attr="aria-label:lang.label;title:lang.label">' + opts + "</select></label>" +
-        '<label class="bm-toggle"><input type="checkbox" id="bm-toggle"> <span data-i18n="ui.basemap">' + esc(t("ui.basemap")) + "</span></label>";
-      L.DomEvent.disableClickPropagation(box);
-      box.querySelector("#bm-toggle").addEventListener("change", function (e) { setBasemap(e.target.checked, true); });
-      box.querySelector("#lang-select").addEventListener("change", function (e) { setLanguage(e.target.value); });
-      return box;
-    },
-  });
-  map.addControl(new BasemapControl());
-  applyStaticText();  // the control's own labels
+  map.createPane("route").style.zIndex = 450;   // above the buildings, under all labels
+  map.getPane("route").style.pointerEvents = "none";
+  var routeCanvas = L.canvas({ pane: "route", padding: 0.5 });
 
+  // ---------- optional background tiles
+  var tiles = L.tileLayer(TILE_URL, { maxZoom: 19, maxNativeZoom: 19, crossOrigin: true });
+  var tileErrors = 0;
+  tiles.on("tileerror", function () { if (++tileErrors === 4) toast(t("toast.tilesFail"), 5000); });
+  tiles.on("tileload", function () { tileErrors = 0; });
+  function setBasemap(on, remember) {
+    if (remember) writePref(PREF.basemap, on ? "1" : "0");
+    tileErrors = 0;
+    if (on) { if (!map.hasLayer(tiles)) tiles.addTo(map); }
+    else if (map.hasLayer(tiles)) map.removeLayer(tiles);
+  }
   function setLanguage(code) {
     if (!LANGS[code] || code === lang) return;
     lang = code;
     try { localStorage.setItem(LANG_KEY, code); } catch (e) { /* private mode */ }
     applyStaticText();
-    // dynamic content was built in the old language: close it, or rebuild the result list
-    map.closePopup();
-    closeSheet();
+    refreshSheet();
     if (!resEl.hidden) showResults();
+    if (nav.active) updateNav();
   }
 
   var blocksLayer, addrLayer, extraLayer = L.layerGroup().addTo(map);
@@ -324,6 +276,8 @@
     map.on("zoomend", styleRoads);
     addStreetsToSearch();
     renderLabels();
+    routerData = rgj;  // the routing graph is built from the same roads, off the critical path
+    setTimeout(getRouter, 1200);
   }
   // OSM splits one street into many short ways; join same-name pieces that touch end to end,
   // so a label sees the whole visible stretch instead of 30 m fragments
@@ -374,8 +328,10 @@
 
   // ---------- street name labels
   var measureCtx = document.createElement("canvas").getContext("2d");
-  measureCtx.font = "600 12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
-  function textW(t) { return measureCtx.measureText(t).width; }
+  var STREET_FONT = '700 12px Atkinson, "Segoe UI", system-ui, sans-serif';
+  function textW(s) { measureCtx.font = STREET_FONT; return measureCtx.measureText(s).width; }
+  function textD(s, px) { measureCtx.font = "800 " + px + 'px "Big Shoulders", "Arial Narrow", sans-serif'; return measureCtx.measureText(s).width; }
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (blocks.length) renderLabels(); });
   function shortName(n) {
     return n.replace(/^Strada /, "Str. ").replace(/^Bulevardul /, "B-dul ").replace(/^Aleea /, "Al. ")
       .replace(/^Piața /, "P-ța ").replace(/^Pasajul /, "Pas. ");
@@ -514,12 +470,13 @@
     // draw other buildings first so blue blocks are on top
     polyFeats.sort(function (a, b) { return (a.properties.kind === "apartments") - (b.properties.kind === "apartments"); });
     blocksLayer = L.geoJSON({ type: "FeatureCollection", features: polyFeats }, {
+      bubblingMouseEvents: false,
       style: function (f) {
         var p = f.properties;
         if (p.kind === "apartments") return p.override ? STYLE.apartmentsOvr : STYLE.apartments;
         return STYLE.other;
       },
-      onEachFeature: function (f, layer) { f._layer = layer; layer.on("click", function (ev) { openPopup(f, ev.latlng); }); },
+      onEachFeature: function (f, layer) { f._layer = layer; layer.on("click", function (ev) { openPlace(f); }); },
     }).addTo(map);
 
     addrLayer = L.layerGroup();
@@ -528,11 +485,12 @@
       var c = f.geometry.coordinates;
       var ovr = f.properties.kind === "override";
       var m = L.circleMarker([c[1], c[0]], {
+        bubblingMouseEvents: false,
         renderer: canvas, radius: ovr ? 6 : 4, weight: 1.5,
         color: ovr ? "#6d28d9" : "#4b5563", fillColor: ovr ? "#a78bfa" : "#d1d5db", fillOpacity: 0.9,
       });
       f._layer = m;
-      m.on("click", function () { openPopup(f, m.getLatLng()); });
+      m.on("click", function () { openPlace(f); });
       addrLayer.addLayer(m);
     });
     updateAddrVisibility();
@@ -648,7 +606,7 @@
     vis.forEach(function (f) {
       var p = f.properties;
       var cls = "lbl" + (p.kind === "apartments" ? "" : " other") + (z >= 18 ? " z18" : "") + (p.override ? " ovr" : "");
-      var cp = map.latLngToContainerPoint(p.lp), hw = textW(p.label) / 2 + 3;
+      var cp = map.latLngToContainerPoint(p.lp), hw = textD(p.label, z >= 18 ? 18 : 15) / 2 + 3;
       var box = [cp.x - hw, cp.y - 9, cp.x + hw, cp.y + 9];
       var mk = L.marker(p.lp, {
         icon: L.divIcon({ className: cls, html: "<span>" + esc(p.label) + "</span>", iconSize: [0, 0] }),
@@ -677,7 +635,7 @@
     }
     sv.forEach(function (e) {
       var g = e.geometry.coordinates, l = e.properties.label;
-      var sp = map.latLngToContainerPoint([g[1], g[0]]), sw = l ? textW(l) / 2 + 6 : 6;
+      var sp = map.latLngToContainerPoint([g[1], g[0]]), sw = l ? textD(l.replace(/^(Sc|nr)\. /, ""), 13) / 2 + 8 : 6;
       boxes.push([sp.x - sw, sp.y - 9, sp.x + sw, sp.y + 9]);
       stairLayer.addLayer(L.marker([g[1], g[0]], {
         icon: L.divIcon({ className: "stair" + (l ? "" : " nolabel") + (l && l.indexOf("nr. ") === 0 ? " num" : "") + (e.properties.override ? " ovr" : ""),
@@ -688,50 +646,71 @@
     return addrLabels;
   }
 
-  // ------------------------------------------------------------------ popup
+  // ------------------------------------------------------------------ place card
   var hlLayer = null;
   function highlight(f) {
-    if (hlLayer && hlLayer._origStyle) hlLayer.setStyle(hlLayer._origStyle);
-    hlLayer = null;
+    clearHighlight();
     if (f._layer && f._layer.setStyle && f.geometry.type !== "Point") {
       f._layer._origStyle = blocksLayer.options.style(f);
       f._layer.setStyle(HL); f._layer.bringToFront && f._layer.bringToFront();
       hlLayer = f._layer;
     }
   }
-  function openPopup(f, latlng) {
-    var p = f.properties;
-    highlight(f);
-    var title = p.label || (p.kind === "apartments" ? t("popup.blockNoNumber") : t("popup.building"));
-    var rows = [];
-    function row(k, v) { if (v) rows.push('<div class="pp-row"><span>' + k + "</span><b>" + esc(v) + "</b></div>"); }
-    row(t("popup.street"), p.street);
-    row(t("popup.housenumber"), p.housenumber);
-    row(t("popup.block"), p.block ? "Bl. " + p.block : null);
-    row(t("popup.name"), p.name && (!p.label || p.label.indexOf(p.name) < 0) ? p.name : null);
-    row(t("popup.levels"), p.levels);
-    if (p.override && p.osm_label !== undefined) row(t("popup.inOsm"), p.osm_label || "–");
-    if (p.note) row(t("popup.note"), p.note);
-    var unl = p._ents.filter(function (e) { return !e.properties.label && !e.properties.redundant; }).length;
-    var nums = p.entrance_nums || [];
-    var stairs = p.entrances && p.entrances.length
-      ? '<div class="pp-stairs">' + p.entrances.map(function (s) { return "<span>" + esc(s) + "</span>"; }).join("") + "</div>"
-      : '<div class="pp-sub">' + esc(t("popup.noStairs")) + (unl ? " " + esc(t("popup.unlabelled", { n: unl })) : "") + "</div>";
-    if (nums.length) stairs += '<div class="pp-sub" style="margin-top:6px">' + esc(t("popup.entranceNums")) + '</div><div class="pp-stairs num">' +
-      nums.map(function (s) { return "<span>" + esc(s) + "</span>"; }).join("") + "</div>";
-    if (p.entrances && p.entrances.length && unl) stairs += '<div class="pp-sub">' + esc(t("popup.unlabelled", { n: unl })) + "</div>";
-    var dest = p.lp || [latlng.lat, latlng.lng];
-    var gmaps = "https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=" + dest[0].toFixed(6) + "," + dest[1].toFixed(6);
-    var osmUrl = /^[wnr]\d+$/.test(p.id) ? "https://www.openstreetmap.org/" + { w: "way", n: "node", r: "relation" }[p.id[0]] + "/" + p.id.slice(1) : null;
-    var html = '<div class="pp-title">' + esc(title) + "</div>" +
-      (p.street && !p.housenumber ? "" : "") + rows.join("") +
-      '<div style="margin-top:8px;font-weight:600">' + esc(t("popup.stairs")) + "</div>" + stairs +
-      '<div class="pp-actions"><a href="' + gmaps + '" target="_blank" rel="noopener">' + esc(t("popup.route")) + "</a></div>" +
-      (osmUrl ? '<div class="pp-id"><a href="' + osmUrl + '" target="_blank" rel="noopener">OSM ' + esc(p.id) + "</a> · " + esc(t("popup.coords")) + ": " +
-        dest[0].toFixed(6) + ", " + dest[1].toFixed(6) + "</div>" : '<div class="pp-id">' + esc(t("popup.own")) + "</div>");
-    L.popup({ maxWidth: 300, autoPanPadding: [20, 80] }).setLatLng(latlng).setContent(html).openOn(map);
+  function clearHighlight() {
+    if (hlLayer && hlLayer._origStyle) hlLayer.setStyle(hlLayer._origStyle);
+    hlLayer = null;
   }
-  map.on("popupclose", function () { if (hlLayer && hlLayer._origStyle) hlLayer.setStyle(hlLayer._origStyle); hlLayer = null; });
+  // what is painted on the plate: block number, else the house number, else whatever label we have
+  function plateNum(p) {
+    if (p.override) return p.label || "?";
+    if (p.block) return "Bl. " + p.block;
+    return p.housenumber || p.label || "?";
+  }
+  function openPlace(f) {
+    if (nav.active) return;
+    highlight(f);
+    var p = f.properties;
+    var ents = p._ents.filter(function (e) { return e.properties.label; });
+    openSheet({
+      kind: "place",
+      html: function () {
+        var num = plateNum(p), kind = t("place.kind." + (p.kind === "apartments" || p.kind === "address" || p.kind === "override" ? p.kind : "other"));
+        var unl = p._ents.filter(function (e) { return !e.properties.label && !e.properties.redundant; }).length;
+        var facts = [];
+        if (p.levels) facts.push("<b>" + esc(t("place.floors", { n: p.levels })) + "</b>");
+        if (p.name && num.indexOf(p.name) < 0) facts.push(esc(p.name));
+        if (p.note) facts.push(esc(t("popup.note")) + ": " + esc(p.note));
+        if (p.override && p.osm_label !== undefined) facts.push(esc(t("popup.inOsm")) + ": " + esc(p.osm_label || "–"));
+        var chips = function (list, cls) {
+          return list.length ? '<div class="ents' + cls + '">' + list.map(function (e) {
+            return '<span role="button" tabindex="0" data-act="ent" data-i="' + ents.indexOf(e) + '">' + esc(e.properties.label.replace(/^nr\. /, "")) + "</span>";
+          }).join("") + "</div>" : "";
+        };
+        var stairs = ents.filter(function (e) { return e.properties.label.indexOf("nr. ") !== 0; });
+        var nums = ents.filter(function (e) { return e.properties.label.indexOf("nr. ") === 0; });
+        var osmUrl = /^[wnr]\d+$/.test(p.id) ? "https://www.openstreetmap.org/" + { w: "way", n: "node", r: "relation" }[p.id[0]] + "/" + p.id.slice(1) : null;
+        var at = p.lp;
+        return '<div class="house"><div class="plate"><span class="hp-street">' + esc(p.street ? shortName(p.street) : kind) + '</span>' +
+          '<span class="hp-num' + (num.length > 7 ? " long" : "") + '">' + esc(num) + "</span></div>" +
+          '<div class="house-side"><span class="house-kind">' + esc(kind) + "</span>" +
+          (p.street ? '<span class="house-street">' + esc(p.street) + "</span>" : "") +
+          (facts.length ? '<div class="facts">' + facts.join("<span>·</span>") + "</div>" : "") + "</div></div>" +
+          "<h3>" + esc(t("popup.stairs")) + "</h3>" +
+          (stairs.length ? chips(stairs, "") : '<p class="muted">' + esc(t("popup.noStairs")) + (unl ? " " + esc(t("popup.unlabelled", { n: unl })) : "") + "</p>") +
+          (nums.length ? '<p class="muted">' + esc(t("popup.entranceNums")) + "</p>" + chips(nums, " num") : "") +
+          (ents.length ? '<p class="muted">' + esc(t("place.entHint")) + "</p>" : "") +
+          '<div class="actions"><button class="btn go" data-act="route">' + ICON.go + esc(t("place.navigate")) + "</button>" +
+          '<a class="btn ghost" href="' + gmapsUrl(at) + '" target="_blank" rel="noopener" aria-label="' + esc(t("place.mapsAria")) + '">' + ICON.ext + "Maps</a></div>" +
+          '<div class="osm-id">' + (osmUrl ? '<a href="' + osmUrl + '" target="_blank" rel="noopener">OSM ' + esc(p.id) + "</a> · " : esc(t("popup.own")) + " · ") +
+          esc(t("popup.coords")) + " " + at[0].toFixed(6) + ", " + at[1].toFixed(6) + "</div>";
+      },
+      acts: {
+        route: function () { planRoute(placeDest(f)); },
+        ent: function (el) { planRoute(placeDest(f, ents[+el.getAttribute("data-i")])); },
+      },
+      onClose: clearHighlight,
+    });
+  }
 
   // ------------------------------------------------------------------ search
   // every number an address answers to: "29-33" -> 29, 31, 33; "32 A/B" -> 32a, 32b; "45A, 45B" -> 45a, 45b
@@ -818,14 +797,15 @@
     } else {
       resEl.innerHTML = r.map(function (f, i) {
         var p = f.properties;
-        var chip = p.kind === "street" ? '<span class="chip green">' + esc(t("chip.street")) + "</span>" :
-          p.kind === "apartments" ? '<span class="chip">' + esc(t("chip.block")) + "</span>" :
-          p.kind === "override" ? '<span class="chip purple">' + esc(t("chip.own")) + "</span>" :
-          '<span class="chip grey">' + esc(t(p.kind === "address" ? "chip.address" : "chip.building")) + "</span>";
-        var sub = p.kind === "street" ? t("search.streetSub") :
-          [p.street, p.entrances.length ? p.entrances.join(", ") : ""].filter(Boolean).join(" · ");
-        return '<li data-i="' + i + '"><div class="r-main">' + esc(p.label || p.name || t("search.noNumber")) + chip +
-          '</div><div class="r-sub">' + esc(sub || "–") + "</div></li>";
+        if (p.kind === "street") {
+          return '<li data-i="' + i + '" tabindex="0"><span class="r-num street">' + esc(t("chip.street")) + '</span><span class="r-main">' +
+            esc(p.label) + '</span><span class="r-sub">' + esc(t("search.streetSub")) + "</span></li>";
+        }
+        var kind = p.kind === "apartments" ? t("chip.block") : p.kind === "override" ? t("chip.own") : t(p.kind === "address" ? "chip.address" : "chip.building");
+        var sub = [kind, p.entrances.length ? p.entrances.join(", ") : "", p.name || ""].filter(Boolean).join(" · ");
+        return '<li data-i="' + i + '" tabindex="0"><span class="r-num' + (p.kind === "apartments" || p.kind === "override" ? "" : " other") + '">' +
+          esc(p.housenumber || p.block || p.label ? plateNum(p) : t("search.noNumber")) + '</span><span class="r-main">' + esc(p.street || p.name || p.label || "") +
+          '</span><span class="r-sub">' + esc(sub) + "</span></li>";
       }).join("");
       resEl._r = r;
     }
@@ -838,11 +818,18 @@
     if (e.key === "Escape") { resEl.hidden = true; qEl.blur(); }
   });
   clearEl.addEventListener("click", function () { qEl.value = ""; showResults(); qEl.focus(); });
+  resEl.addEventListener("keydown", function (e) {
+    var li = e.target.closest("li[data-i]");
+    if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); goTo(resEl._r[+li.getAttribute("data-i")]); }
+  });
   resEl.addEventListener("click", function (e) {
     var li = e.target.closest("li[data-i]");
     if (li) goTo(resEl._r[+li.getAttribute("data-i")]);
   });
-  map.on("click", function () { resEl.hidden = true; qEl.blur(); });
+  map.on("click", function () {
+    resEl.hidden = true; qEl.blur();
+    if (sheetSpec && (sheetSpec.kind === "place" || sheetSpec.kind === "settings" || sheetSpec.kind === "intro")) closeSheet();
+  });
   function goTo(f) {
     resEl.hidden = true; qEl.blur();
     var p = f.properties, ll;
@@ -854,150 +841,526 @@
       map.fitBounds(b, { maxZoom: 18, padding: [60, 60] });
       if (map.getZoom() < 17) map.setZoom(17);
     }
-    setTimeout(function () { openPopup(f, ll); }, 350);
+    setTimeout(function () { openPlace(f); }, 350);
   }
 
-  // ------------------------------------------------------------------ locate
-  var locBtn = $("btn-locate"), locOn = false, locMarker = null, locCircle = null, firstFix = false;
-  locBtn.addEventListener("click", function () {
-    if (locOn) { map.stopLocate(); locOn = false; locBtn.classList.remove("on"); return; }
-    if (!window.isSecureContext) toast(t("toast.locHttps"), 6000);
-    locOn = true; firstFix = true; locBtn.classList.add("on");
-    map.locate({ watch: true, enableHighAccuracy: true, setView: false, maximumAge: 5000, timeout: 20000 });
-  });
-  map.on("locationfound", function (e) {
-    if (!locMarker) {
-      locCircle = L.circle(e.latlng, { radius: e.accuracy, renderer: canvas, color: "#2563eb", weight: 1, fillOpacity: 0.12, interactive: false }).addTo(map);
-      locMarker = L.circleMarker(e.latlng, { renderer: canvas, radius: 8, color: "#fff", weight: 3, fillColor: "#2563eb", fillOpacity: 1, interactive: false }).addTo(map);
-    } else { locMarker.setLatLng(e.latlng); locCircle.setLatLng(e.latlng).setRadius(e.accuracy); }
-    if (firstFix) { firstFix = false; map.setView(e.latlng, Math.max(map.getZoom(), 17)); }
-  });
-  map.on("locationerror", function (e) {
-    locOn = false; locBtn.classList.remove("on");
-    toast(t("toast.locFail", { msg: e.message }), 6000);
-  });
-
-  // ------------------------------------------------------------------ sheet (info / offline)
-  var sheet = $("sheet"), sheetBody = $("sheet-body");
-  function openSheet(html) { sheetBody.innerHTML = html; sheet.hidden = false; }
-  function closeSheet() { sheet.hidden = true; }
-  sheet.addEventListener("click", function (e) { if (e.target === sheet || e.target.closest(".sheet-close")) closeSheet(); });
-
-  $("btn-info").addEventListener("click", function () {
-    var sw = function (style, key) { return '<div class="sw" style="' + style + '"></div><div>' + esc(t(key)) + "</div>"; };
-    var h = "<h2>" + esc(t("app.title")) + "</h2>" +
-      '<div class="legend">' +
-      sw("background:#3b82f6;opacity:.6;border:1px solid #1d4ed8", "legend.apartments") +
-      sw("background:#9ca3af;opacity:.6;border:1px solid #6b7280", "legend.other") +
-      sw("background:#ea580c;border-radius:9px", "legend.stair") +
-      sw("background:#fff;border:1.5px solid #ea580c;border-radius:9px", "legend.entranceNum") +
-      sw("background:#a78bfa;border-radius:9px", "legend.override") +
-      sw("background:#fff3bf;border:2px solid #c9a227", "legend.mainRoad") +
-      sw("background:#fff;border:2px solid #c3bcae", "legend.street") +
-      sw("background:#a9cdee", "legend.water") +
-      sw("background:#d6ebc8", "legend.park") + "</div>";
-    if (stats) {
-      var pct = function (a, b) { return b ? Math.round(100 * a / b) + "%" : "–"; };
-      var tr = function (key, val) { return "<tr><td>" + esc(t(key)) + '</td><td class="n">' + val + "</td></tr>"; };
-      h += "<h3>" + esc(t("cov.title")) + "</h3><table>" +
-        tr("cov.blocks", stats.apartments) +
-        tr("cov.withNumber", stats.apartments_labelled + " (" + pct(stats.apartments_labelled, stats.apartments) + ")") +
-        tr("cov.withStairs", stats.apartments_with_stairs + " (" + pct(stats.apartments_with_stairs, stats.apartments) + ")") +
-        tr("cov.entrances", stats.entrances + " / " + stats.entrances_labelled) +
-        (stats.entrances_numbered != null ? tr("cov.entrancesNum", stats.entrances_numbered + " (" + pct(stats.entrances_numbered, stats.entrances) + ")") : "") +
-        tr("cov.overrides", overrideCount) + "</table>";
-      if (stats.neighbourhoods && stats.neighbourhoods.length) {
-        h += "<h3>" + esc(t("nb.title")) + "</h3><table><tr><th>" + esc(t("nb.name")) + '</th><th class="n">' + esc(t("nb.blocks")) +
-          '</th><th class="n">' + esc(t("nb.numbered")) + '</th><th class="n">' + esc(t("nb.stairs")) + "</th></tr>" +
-          stats.neighbourhoods.map(function (n) {
-            return "<tr><td>" + esc(n.name) + '</td><td class="n">' + n.blocks + '</td><td class="n">' + pct(n.labelled, n.blocks) +
-              '</td><td class="n">' + pct(n.with_stairs, n.blocks) + "</td></tr>";
-          }).join("") + "</table>";
-      }
-      h += '<p class="muted">' + esc(t("info.footer", { ts: stats.osm_timestamp || stats.generated })) + "</p>";
-    }
-    openSheet(h);
-  });
-
-  // ---------- offline tile download
-  function lon2x(lon, z) { return Math.floor((lon + 180) / 360 * Math.pow(2, z)); }
-  function lat2y(lat, z) {
-    var r = lat * Math.PI / 180;
-    return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z));
+  // ------------------------------------------------------------------ bottom sheet
+  // one sheet at a time: {kind, html(), acts{}, after(el), onClose(), closeAct(), compact}
+  var sheetEl = $("sheet"), sheetBody = $("sheet-body"), sheetSpec = null;
+  function openSheet(spec) {
+    if (sheetSpec && sheetSpec.kind !== spec.kind && sheetSpec.onClose) sheetSpec.onClose();
+    sheetSpec = spec;
+    sheetEl.classList.toggle("no-close", !!spec.noClose);
+    renderSheet();
+    sheetEl.hidden = false;
+    document.body.classList.add("sheet-open");
+    sheetEl.scrollTop = 0;
   }
-  function tileUrl(z, x, y) {
-    var s = TILE_SUBDOMAINS[Math.abs(x + y) % TILE_SUBDOMAINS.length];
-    // must produce exactly the URL Leaflet requests, or the cached tile is never hit:
-    // Leaflet fills {r} with "@2x" on high-DPI screens
-    return TILE_URL.replace("{s}", s).replace("{z}", z).replace("{x}", x).replace("{y}", y).replace("{r}", L.Browser.retina ? "@2x" : "");
+  function renderSheet() {
+    if (!sheetSpec) return;
+    sheetBody.innerHTML = sheetSpec.html();
+    if (sheetSpec.after) sheetSpec.after(sheetBody);
+    syncSheetHeight();
   }
-  function plannedTiles() {
-    var set = {}, list = [];
-    function add(z, x, y) { var k = z + "/" + x + "/" + y; if (!set[k]) { set[k] = 1; list.push([z, x, y]); } }
-    var B = CITY_BOUNDS;
-    for (var z = 13; z <= 16; z++) {
-      for (var x = lon2x(B.getWest(), z); x <= lon2x(B.getEast(), z); x++)
-        for (var y = lat2y(B.getNorth(), z); y <= lat2y(B.getSouth(), z); y++) add(z, x, y);
-    }
-    // z17 + z18 only where there are buildings we show (keeps it to the built-up areas)
-    blocks.forEach(function (f) {
-      var bb = f.properties._bb || (f.properties.lp && [f.properties.lp[0], f.properties.lp[1], f.properties.lp[0], f.properties.lp[1]]);
-      if (!bb || f.properties.kind === "address") return;
-      for (var z = 17; z <= 18; z++)
-        for (var x = lon2x(bb[1], z); x <= lon2x(bb[3], z); x++)
-          for (var y = lat2y(bb[2], z); y <= lat2y(bb[0], z); y++) add(z, x, y);
+  function refreshSheet() { if (sheetSpec && !sheetEl.hidden) renderSheet(); }
+  function closeSheet() {
+    var s = sheetSpec;
+    sheetSpec = null;
+    sheetEl.hidden = true;
+    document.body.classList.remove("sheet-open");
+    syncSheetHeight();
+    if (s && s.onClose) s.onClose();
+  }
+  function syncSheetHeight() {
+    requestAnimationFrame(function () {
+      document.documentElement.style.setProperty("--sheet-h", sheetEl.hidden ? "0px" : sheetEl.offsetHeight + "px");
     });
-    return list;
   }
-  var dl = { running: false, stop: false };
-  $("btn-offline").addEventListener("click", function () {
-    if (!("caches" in window) || !navigator.serviceWorker) {
-      openSheet("<h2>" + esc(t("off.unsupportedTitle")) + "</h2><p>" + esc(t("off.unsupported")) + "</p>");
+  if (window.ResizeObserver) new ResizeObserver(syncSheetHeight).observe(sheetEl);
+  sheetEl.addEventListener("click", function (e) {
+    if (e.target.closest(".sheet-close")) {
+      if (sheetSpec && sheetSpec.closeAct) sheetSpec.closeAct(); else closeSheet();
       return;
     }
-    var list = plannedTiles();
-    var byZ = {}; list.forEach(function (t) { byZ[t[0]] = (byZ[t[0]] || 0) + 1; });
-    var mb = Math.round(list.length * (L.Browser.retina ? 40 : 14) / 1024);  // rough estimate per tile
-    // off.p1 / off.p2 carry <b>/<i> markup from our own lang files, so they are inserted as HTML
-    openSheet("<h2>" + esc(t("off.title")) + "</h2>" +
-      "<p>" + t("off.p1") + "</p><p>" + t("off.p2") + "</p>" +
-      "<table><tr><th>" + esc(t("off.zoom")) + '</th><th class="n">' + esc(t("off.tiles")) + "</th></tr>" +
-      Object.keys(byZ).map(function (z) { return "<tr><td>" + z + '</td><td class="n">' + byZ[z] + "</td></tr>"; }).join("") +
-      "<tr><td><b>" + esc(t("off.total")) + '</b></td><td class="n"><b>' + list.length + "</b> (" + esc(t("off.estimate", { mb: mb })) + ")</td></tr></table>" +
-      '<p class="muted">' + esc(t("off.note")) + "</p>" +
-      '<progress id="dlp" max="' + list.length + '" value="0"></progress><div id="dls" class="muted">&nbsp;</div>' +
-      '<button class="btn" id="dlgo">' + esc(dl.running ? t("off.running") : t("off.start")) + '</button><button class="btn sec" id="dlstop">' + esc(t("off.stop")) + "</button>" +
-      '<button class="btn sec" id="dlclear">' + esc(t("off.clear")) + "</button>");
-    $("dlgo").onclick = function () { if (!dl.running) runDownload(list); };
-    $("dlstop").onclick = function () { dl.stop = true; };
-    $("dlclear").onclick = function () { caches.delete(TILE_CACHE).then(function () { $("dls").textContent = t("off.cleared"); }); };
+    var el = e.target.closest("[data-act]"), fn = el && sheetSpec && sheetSpec.acts && sheetSpec.acts[el.getAttribute("data-act")];
+    if (fn) fn(el, e);
   });
-  function runDownload(list) {
-    dl.running = true; dl.stop = false;
-    var i = 0, done = 0, have = 0, failed = 0;
-    caches.open(TILE_CACHE).then(function (cache) {
-      function upd() {
-        var p = $("dlp"), s = $("dls");
-        if (p) p.value = done;
-        if (s) s.textContent = t("off.progress", { done: done, total: list.length, have: have, failed: failed });
-      }
-      function next() {
-        if (dl.stop || i >= list.length) return Promise.resolve();
-        var tile = list[i++], url = tileUrl(tile[0], tile[1], tile[2]);
-        return cache.match(url).then(function (hit) {
-          if (hit) { have++; return; }
-          return fetch(url, { mode: "cors" }).then(function (r) {
-            if (r.ok) return cache.put(url, r); failed++;
-          }).catch(function () { failed++; });
-        }).then(function () { done++; if (done % 20 === 0) upd(); return next(); });
-      }
-      return Promise.all([next(), next(), next(), next()]).then(function () {
-        upd(); dl.running = false;
-        var s = $("dls");
-        var msg = dl.stop ? t("off.stopped") : (failed ? t("off.doneErrors", { n: failed }) : t("off.done"));
-        if (s) s.textContent += " – " + msg;
-        toast(msg, 5000);
+  sheetEl.addEventListener("change", function (e) {
+    var el = e.target.closest("[data-change]"), fn = el && sheetSpec && sheetSpec.acts && sheetSpec.acts[el.getAttribute("data-change")];
+    if (fn) fn(el, e);
+  });
+
+  // ------------------------------------------------------------------ icons + formatting
+  function svg(paths, extra) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"' +
+      (extra || "") + ">" + paths + "</svg>";
+  }
+  var ICON = {
+    car: svg('<path d="M4 15v-3.5L6.2 6.5h11.6L20 11.5V15"/><rect x="3" y="15" width="18" height="4" rx="1.5"/><path d="M7 19v1.5M17 19v1.5M4 11.5h16"/>'),
+    bike: svg('<circle cx="5.5" cy="16" r="3.5"/><circle cx="18.5" cy="16" r="3.5"/><path d="M5.5 16 9 9h7l2.5 7M9 9l3.5 7H5.5M14 5h2.5l-.5 4"/>'),
+    foot: svg('<circle cx="13" cy="4.5" r="1.8"/><path d="m9.5 21 2.2-6.2-2.4-3.1 1.1-4.6 3.6 2.4 2.8.8M11.7 14.8l3 2.2.9 4M9.2 8.6 6.8 11.5"/>'),
+    go: svg('<path d="M3 11 21 3l-8 18-2-8-8-2Z"/>'),
+    ext: svg('<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
+  };
+  var MODE_ICON = { car: ICON.car, bike: ICON.bike, foot: ICON.foot };
+  function turnSvg(step) {
+    var m = (step && step.modifier) || "", type = step ? step.type : "arrive", p;
+    var mirror = type !== "roundabout" && (/right/.test(m) || m === "uturn");
+    if (type === "arrive") p = '<path d="M12 21s-6-5.6-6-10a6 6 0 0 1 12 0c0 4.4-6 10-6 10Z"/><circle cx="12" cy="11" r="2.2"/>';
+    else if (type === "roundabout") p = '<path d="M12 21v-6.5A4.5 4.5 0 1 0 7.5 10H3.5"/><path d="M6 7.5 3.5 10 6 12.5"/>';  // anticlockwise, as driven here
+    else if (m === "uturn") p = '<path d="M9 21V10a4.5 4.5 0 0 1 9 0v3"/><path d="m14.5 10 3.5 3.5 3.5-3.5"/>';
+    else if (/sharp/.test(m)) p = '<path d="M17 21V9.5L7.5 17"/><path d="M7 11v6.5h6.5"/>';
+    else if (/slight/.test(m)) p = '<path d="M15 21v-7.5L8.5 7"/><path d="M8 13V6.5h6.5"/>';
+    else if (m === "left" || m === "right") p = '<path d="M16 21v-8a3 3 0 0 0-3-3H6"/><path d="m10 6-4 4 4 4"/>';
+    else p = '<path d="M12 21V4"/><path d="m6 10 6-6 6 6"/>';
+    return svg(p, mirror ? ' style="transform:scaleX(-1)"' : "");
+  }
+  var LOCALE = { en: "en-GB", hu: "hu-HU", ro: "ro-RO" };
+  function fmtNum(n, d) {
+    try { return n.toLocaleString(LOCALE[lang] || lang, { maximumFractionDigits: d, minimumFractionDigits: d }); } catch (e) { return n.toFixed(d); }
+  }
+  function fmtDist(m) {
+    if (m < 950) return t("unit.m", { n: m < 100 ? Math.round(m / 5) * 5 : Math.round(m / 10) * 10 });
+    return t("unit.km", { n: fmtNum(m / 1000, m < 9950 ? 1 : 0) });
+  }
+  function fmtDur(s) {
+    var min = Math.max(1, Math.round(s / 60));
+    if (min < 60) return { n: String(min), u: t("unit.min") };
+    return { n: Math.floor(min / 60) + ":" + ("0" + (min % 60)).slice(-2), u: t("unit.h") };
+  }
+  function fmtClock(s) {
+    var d = new Date(Date.now() + s * 1000);
+    try { return d.toLocaleTimeString(LOCALE[lang] || lang, { hour: "2-digit", minute: "2-digit", hour12: false }); } catch (e) { return d.getHours() + ":" + ("0" + d.getMinutes()).slice(-2); }
+  }
+  function gmapsUrl(at) {
+    return "https://www.google.com/maps/dir/?api=1&travelmode=" + (route.mode === "foot" ? "walking" : route.mode === "bike" ? "bicycling" : "driving") +
+      "&destination=" + at[0].toFixed(6) + "," + at[1].toFixed(6);
+  }
+
+  // ------------------------------------------------------------------ live location
+  var loc = { watchId: null, pos: null, acc: 0, heading: null, last: 0, follow: false, marker: null, circle: null, waiting: [], denied: false };
+  var locBtn = $("btn-locate");
+  function setLocBtn() {
+    locBtn.classList.toggle("on", loc.watchId !== null);
+    locBtn.classList.toggle("follow", loc.follow && !!loc.pos);
+    locBtn.classList.toggle("wait", loc.watchId !== null && !loc.pos);
+  }
+  function flushWaiting(err) { var w = loc.waiting; loc.waiting = []; w.forEach(function (fn) { fn(err); }); }
+  function startLocation(follow) {
+    if (follow) loc.follow = true;
+    if (loc.watchId !== null) {
+      if (loc.pos && follow) map.setView(loc.pos, Math.max(map.getZoom(), 17));
+      setLocBtn();
+      return;
+    }
+    if (!window.isSecureContext) { toast(t("toast.locHttps"), 7000); flushWaiting(true); return; }
+    if (!("geolocation" in navigator)) { toast(t("loc.unavailable"), 6000); flushWaiting(true); return; }
+    loc.watchId = navigator.geolocation.watchPosition(onFix, onLocError, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
+    setLocBtn();
+  }
+  function stopLocation() {
+    if (loc.watchId !== null) navigator.geolocation.clearWatch(loc.watchId);
+    loc.watchId = null; loc.follow = false;
+    setLocBtn();
+  }
+  function onFix(p) {
+    var c = p.coords, ll = [c.latitude, c.longitude], prev = loc.pos, first = !prev;
+    var moved = prev ? BlokkRouter.dist(prev, ll) : 0;
+    if (c.heading != null && !isNaN(c.heading) && (c.speed || 0) > 0.8) loc.heading = c.heading;
+    else if (prev && moved > 6 && c.accuracy < 30) loc.heading = BlokkRouter.bearing(prev, ll);
+    loc.pos = ll; loc.acc = c.accuracy || 0; loc.last = Date.now(); loc.denied = false;
+    drawMe();
+    if (first && !CITY_BOUNDS.pad(0.3).contains(ll)) { loc.follow = false; toast(t("loc.outside"), 7000); }
+    else if (first && loc.follow) map.setView(ll, Math.max(map.getZoom(), 17));
+    else if (loc.follow) map.panTo(ll, { animate: true, duration: 0.5 });
+    setLocBtn();
+    flushWaiting(false);
+    if (nav.active) updateNav();
+  }
+  function onLocError(e) {
+    if (e.code === 1) {
+      stopLocation(); loc.denied = true;
+      toast(t("loc.denied"), 9000);
+      flushWaiting(true);
+    } else if (!loc.pos) {
+      toast(t("loc.unavailable"), 6000);
+      flushWaiting(true);  // a waiting route request falls back to the Google Maps card
+    }
+  }
+  function drawMe() {
+    if (!loc.marker) {
+      loc.circle = L.circle(loc.pos, { renderer: routeCanvas, radius: loc.acc, color: "#15387a", weight: 1, opacity: 0.35,
+        fillColor: "#15387a", fillOpacity: 0.07, interactive: false }).addTo(map);
+      loc.marker = L.marker(loc.pos, {
+        icon: L.divIcon({ className: "me", iconSize: [0, 0],
+          html: '<div class="me-wrap"><div class="me-cone"></div><div class="me-pulse"></div><div class="me-dot"></div></div>' }),
+        interactive: false, keyboard: false, zIndexOffset: 2000,
+      }).addTo(map);
+    } else {
+      loc.marker.setLatLng(loc.pos);
+      loc.circle.setLatLng(loc.pos).setRadius(loc.acc);
+    }
+    var el = loc.marker.getElement();
+    if (!el) return;
+    el.classList.remove("stale");
+    el.classList.toggle("has-heading", loc.heading != null);
+    if (loc.heading != null) el.querySelector(".me-cone").style.transform = "rotate(" + loc.heading.toFixed(0) + "deg)";
+  }
+  setInterval(function () {  // grey the dot when the phone stops reporting
+    if (loc.marker && Date.now() - loc.last > 30000 && loc.marker.getElement()) loc.marker.getElement().classList.add("stale");
+  }, 10000);
+  locBtn.addEventListener("click", function () {
+    if (loc.watchId === null) { startLocation(true); return; }
+    if (!loc.pos) return;
+    loc.follow = !loc.follow || nav.active;
+    if (loc.follow) map.setView(loc.pos, Math.max(map.getZoom(), nav.active ? 17 : 16));
+    setLocBtn();
+  });
+  map.on("dragstart", function () { if (loc.follow) { loc.follow = false; setLocBtn(); } });
+
+  // first visit: explain before the browser asks; a site that already has permission just starts
+  function initLocation() {
+    var go = function (state) {
+      if (state === "granted") startLocation(true);
+      else if (state !== "denied" && !readPref(PREF.locIntro)) showLocIntro();
+    };
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: "geolocation" }).then(function (r) { go(r.state); }, function () { go("prompt"); });
+    } else go("prompt");
+  }
+  function showLocIntro() {
+    var done = function (allow) {
+      writePref(PREF.locIntro, "1");
+      closeSheet();
+      if (allow) startLocation(true);
+    };
+    openSheet({
+      kind: "intro",
+      html: function () {
+        return '<div class="intro"><div class="pin"><svg viewBox="0 0 66 66" aria-hidden="true"><circle cx="33" cy="33" r="31" fill="#15387a"/>' +
+          '<circle cx="33" cy="33" r="27" fill="none" stroke="#f4f1e8" stroke-width="2"/><circle cx="33" cy="33" r="16" fill="none" stroke="#f4f1e8" stroke-width="1.6" stroke-dasharray="3 4"/>' +
+          '<circle cx="33" cy="33" r="7.5" fill="#ff5f14" stroke="#fff" stroke-width="3"/></svg></div>' +
+          "<h2>" + esc(t("loc.title")) + "</h2><p>" + esc(t("loc.text")) + "</p></div>" +
+          '<div class="actions"><button class="btn go" data-act="allow">' + ICON.go + esc(t("loc.allow")) + "</button>" +
+          '<button class="btn quiet" data-act="later">' + esc(t("loc.later")) + "</button></div>";
+      },
+      acts: { allow: function () { done(true); }, later: function () { done(false); } },
+      closeAct: function () { done(false); },
+    });
+  }
+
+  // ------------------------------------------------------------------ directions
+  var routerData = null, router = null;
+  function getRouter() {
+    if (!router && routerData && window.BlokkRouter) router = BlokkRouter.fromGeoJSON(routerData);
+    return router;
+  }
+  var MODES = ["car", "bike", "foot"];
+  var CAR_FACTOR = 1.25;  // lights, junctions, parking: free-flow road speeds are optimistic in town
+  var route = { dest: null, res: null, cum: null, mode: MODES.indexOf(readPref(PREF.mode)) >= 0 ? readPref(PREF.mode) : "car",
+    casing: null, line: null, pin: null };
+  var nav = { active: false, seg: 0, off: 0, lastReroute: 0, left: 0, leftTime: 0 };
+
+  function placeDest(f, ent) {
+    var p = f.properties, num = plateNum(p);
+    if (!ent) return { at: p.lp, f: f, title: num, street: p.street || "", plate: num };
+    var lab = ent.properties.label || "";
+    return { at: [ent.geometry.coordinates[1], ent.geometry.coordinates[0]], f: f, title: num + " · " + lab,
+      street: p.street || "", plate: lab.replace(/^(Sc|nr)\. /, "") || num };
+  }
+  function planRoute(dest) {
+    route.dest = dest;
+    if (loc.pos) { computeRoute(true); return; }
+    openSheet(waitSpec());
+    loc.waiting.push(function (err) {
+      if (route.dest !== dest) return;
+      if (err) openSheet(noLocSpec()); else computeRoute(true);
+    });
+    startLocation(false);
+  }
+  function computeRoute(fit) {
+    var r = getRouter();
+    if (!r) { toast(t("route.loading"), 2000); setTimeout(function () { computeRoute(fit); }, 700); return; }
+    var res = r.route(loc.pos, route.dest.at, route.mode);
+    if (res && route.mode === "car") res.duration *= CAR_FACTOR;
+    route.res = res;
+    route.cum = null;
+    if (res) {
+      route.cum = [0];
+      for (var i = 1; i < res.coords.length; i++) route.cum.push(route.cum[i - 1] + BlokkRouter.dist(res.coords[i - 1], res.coords[i]));
+    }
+    drawRoute();
+    if (nav.active) return;
+    if (!res) { openSheet(noRouteSpec()); return; }
+    if (sheetSpec && sheetSpec.kind === "route") renderSheet(); else openSheet(routeSpec());
+    if (fit) requestAnimationFrame(function () {
+      map.fitBounds(L.latLngBounds(res.coords.concat([loc.pos])), {
+        paddingTopLeft: [24, 90], paddingBottomRight: [80, sheetEl.offsetHeight + 24], maxZoom: 17,
       });
+    });
+  }
+  function drawRoute(fromSeg, fromPt) {
+    var pts = route.res ? route.res.coords : [];
+    if (fromSeg != null) pts = [fromPt].concat(pts.slice(fromSeg + 1));
+    if (!route.line) {
+      route.casing = L.polyline([], { renderer: routeCanvas, color: "#0c2454", weight: 11, opacity: 0.9, lineCap: "round", lineJoin: "round", interactive: false }).addTo(map);
+      route.line = L.polyline([], { renderer: routeCanvas, color: "#ff5f14", weight: 6.5, lineCap: "round", lineJoin: "round", interactive: false }).addTo(map);
+    }
+    route.casing.setLatLngs(pts);
+    route.line.setLatLngs(pts);
+    if (route.pin) map.removeLayer(route.pin);
+    route.pin = route.dest ? L.marker(route.dest.at, {
+      icon: L.divIcon({ className: "dest-pin", iconSize: [0, 0], html: '<div class="pin-plate">' + esc(route.dest.plate) + '</div><div class="pin-dot"></div>' }),
+      interactive: false, keyboard: false, zIndexOffset: 1500,
+    }).addTo(map) : null;
+  }
+  function clearRoute() {
+    [route.casing, route.line, route.pin].forEach(function (l) { if (l) map.removeLayer(l); });
+    route.casing = route.line = route.pin = null;
+    route.res = route.cum = null;
+    route.dest = null;
+  }
+  function stepVerb(st) {
+    if (!st || st.type === "arrive") return t("step.arrive");
+    if (st.type === "depart") return t("step.depart");
+    if (st.type === "roundabout") return t("step.roundabout", { n: st.exit });
+    if (st.type === "continue") return t("step.continue");
+    return t("step." + st.modifier.replace(" ", "_"));
+  }
+  function stepStreet(st) {
+    if (!st || st.type === "arrive") return route.dest ? [route.dest.title, route.dest.street].filter(Boolean).join(", ") : "";
+    if (st.name) return shortName(st.name);
+    return t(ROAD_CLASS[st.cls] === "foot" ? "road.path" : st.cls === "service" ? "road.service" : "road.unnamed");
+  }
+  function destLine() {
+    return '<p class="to-line">' + esc(t("route.to")) + ": <b>" + esc(route.dest.title) + "</b>" + (route.dest.street ? ", " + esc(route.dest.street) : "") + "</p>";
+  }
+  function modesHtml() {
+    return '<div class="modes" role="group">' + MODES.map(function (m) {
+      return '<button data-act="mode" data-mode="' + m + '" aria-pressed="' + (m === route.mode) + '">' + MODE_ICON[m] + esc(t("route.mode." + m)) + "</button>";
+    }).join("") + "</div>";
+  }
+  function routeSpec() {
+    return {
+      kind: "route",
+      html: function () {
+        var r = route.res, d = fmtDur(r.duration);
+        var steps = r.steps.filter(function (s) { return s.type !== "depart"; });
+        return modesHtml() +
+          '<div class="summary"><span class="big">' + d.n + "<small>" + esc(d.u) + '</small></span><span class="rest"><b>' + esc(fmtDist(r.distance)) +
+          "</b> · " + esc(t("route.arrive", { time: fmtClock(r.duration) })) + "</span></div>" + destLine() +
+          '<div class="actions"><button class="btn go" data-act="start">' + ICON.go + esc(t("route.start")) + "</button>" +
+          '<a class="btn ghost" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener" aria-label="' + esc(t("place.mapsAria")) + '">' + ICON.ext + "Maps</a></div>" +
+          '<details class="more"><summary>' + esc(t("route.steps", { n: steps.length })) + '</summary><ol class="steps">' +
+          r.steps.map(function (s) {
+            return '<li><span class="ico">' + turnSvg(s) + '</span><span><div class="st-verb">' + esc(stepVerb(s)) + '</div><div class="st-street">' +
+              esc(stepStreet(s)) + '</div></span><span class="st-dist">' + (s.distance ? esc(fmtDist(s.distance)) : "") + "</span></li>";
+          }).join("") + '</ol></details><p class="muted">' + esc(t("route.note")) + "</p>";
+      },
+      acts: {
+        mode: function (el) {
+          route.mode = el.getAttribute("data-mode");
+          writePref(PREF.mode, route.mode);
+          computeRoute(true);
+        },
+        start: function () { startNav(); },
+      },
+      onClose: function () { if (!nav.active) clearRoute(); },
+    };
+  }
+  function waitSpec() {
+    return {
+      kind: "route-wait",
+      html: function () {
+        return modesHtml() + '<div class="summary"><span class="rest"><b>' + esc(t("loc.waiting")) + "</b></span></div>" + destLine() +
+          '<div class="actions"><button class="btn go" disabled>' + ICON.go + esc(t("route.start")) + "</button>" +
+          '<a class="btn ghost" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener" aria-label="' + esc(t("place.mapsAria")) + '">' + ICON.ext + "Maps</a></div>";
+      },
+      acts: { mode: function (el) { route.mode = el.getAttribute("data-mode"); writePref(PREF.mode, route.mode); renderSheet(); } },
+      onClose: function () { if (!nav.active) clearRoute(); },
+    };
+  }
+  function noLocSpec() {
+    return {
+      kind: "route-noloc",
+      html: function () {
+        return "<h2>" + esc(t("loc.title")) + "</h2><p>" + esc(t("loc.needed")) + "</p>" + destLine() +
+          '<div class="actions"><a class="btn go" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener">' + ICON.ext + "Google Maps</a></div>";
+      },
+      onClose: clearRoute,
+    };
+  }
+  function noRouteSpec() {
+    return {
+      kind: "route-none",
+      html: function () {
+        return modesHtml() + "<p><b>" + esc(t("route.none")) + "</b></p>" + destLine() +
+          '<div class="actions"><a class="btn go" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener">' + ICON.ext + "Google Maps</a></div>";
+      },
+      acts: { mode: function (el) { route.mode = el.getAttribute("data-mode"); writePref(PREF.mode, route.mode); openSheet(waitSpec()); computeRoute(true); } },
+      onClose: function () { if (!nav.active) clearRoute(); },
+    };
+  }
+
+  // ---------- turn-by-turn
+  var wakeLock = null;
+  function requestWakeLock() {
+    try { if (navigator.wakeLock) navigator.wakeLock.request("screen").then(function (w) { wakeLock = w; }, function () {}); } catch (e) { /* not supported */ }
+  }
+  function releaseWakeLock() { try { if (wakeLock) wakeLock.release(); } catch (e) { /* already gone */ } wakeLock = null; }
+  document.addEventListener("visibilitychange", function () { if (nav.active && document.visibilityState === "visible") requestWakeLock(); });
+
+  function startNav() {
+    if (!route.res || !loc.pos) return;
+    nav.active = true; nav.seg = 0; nav.off = 0; nav.lastReroute = Date.now();
+    document.body.classList.add("navigating");
+    $("navbar").hidden = false;
+    resEl.hidden = true;
+    loc.follow = true;
+    setLocBtn();
+    map.setView(loc.pos, route.mode === "foot" ? 18 : 17);
+    openSheet(navSpec());
+    updateNav();
+    requestWakeLock();
+  }
+  function endNav(arrived) {
+    var dest = route.dest;
+    nav.active = false;
+    document.body.classList.remove("navigating");
+    $("navbar").hidden = true;
+    releaseWakeLock();
+    closeSheet();
+    clearRoute();
+    if (arrived && dest) { toast(t("route.arrived"), 5000); openPlace(dest.f); }
+  }
+  function navSpec() {
+    return {
+      kind: "nav",
+      html: function () {
+        var d = fmtDur(nav.leftTime || route.res.duration);
+        return '<div class="navstrip"><div class="summary"><span class="big">' + d.n + "<small>" + esc(d.u) + '</small></span><span class="rest"><b>' +
+          esc(fmtDist(nav.left || route.res.distance)) + "</b> · " + esc(t("route.arrive", { time: fmtClock(nav.leftTime || route.res.duration) })) +
+          '</span></div><button class="btn ghost" data-act="end">' + esc(t("route.end")) + "</button></div>" + destLine();
+      },
+      acts: { end: function () { endNav(false); } },
+      closeAct: function () { endNav(false); },
+      noClose: true,
+    };
+  }
+  // where on the route are we: nearest point on the polyline, searched from the last known segment on
+  function project(pos) {
+    var c = route.res.coords, best = null, KXr = 111320 * Math.cos(pos[0] * Math.PI / 180), KYr = 110540;
+    var px = pos[1] * KXr, py = pos[0] * KYr;
+    for (var i = Math.max(0, nav.seg - 3); i < c.length - 1; i++) {
+      var ax = c[i][1] * KXr, ay = c[i][0] * KYr, bx = c[i + 1][1] * KXr, by = c[i + 1][0] * KYr;
+      var vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
+      var tt = L2 ? Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / L2)) : 0;
+      var d = Math.hypot(px - ax - tt * vx, py - ay - tt * vy);
+      if (!best || d < best.d) best = { seg: i, t: tt, d: d, at: [c[i][0] + (c[i + 1][0] - c[i][0]) * tt, c[i][1] + (c[i + 1][1] - c[i][1]) * tt] };
+      if (best.d < 5 && i > best.seg + 40) break;  // found it; don't scan the whole route every second
+    }
+    best.along = route.cum[best.seg] + (route.cum[best.seg + 1] - route.cum[best.seg]) * best.t;
+    return best;
+  }
+  function updateNav() {
+    if (!nav.active || !route.res || !loc.pos) return;
+    var pr = project(loc.pos), now = Date.now();
+    if (pr.d > Math.max(35, Math.min(loc.acc, 60))) {
+      if (++nav.off >= 2 && now - nav.lastReroute > 6000) {
+        nav.off = 0; nav.lastReroute = now; nav.seg = 0;
+        toast(t("route.recalc"), 2500);
+        computeRoute(false);
+        if (!route.res) { endNav(false); toast(t("route.none"), 6000); return; }
+        pr = project(loc.pos);
+      }
+    } else nav.off = 0;
+    nav.seg = pr.seg;
+    var total = route.res.distance, left = Math.max(0, total - pr.along);
+    if (left < 20 || BlokkRouter.dist(loc.pos, route.dest.at) < 20) { endNav(true); return; }
+    var steps = route.res.steps, next = null, after = null;
+    for (var k = 0; k < steps.length; k++) {
+      if (steps[k].type !== "depart" && steps[k].idx > pr.seg) { next = steps[k]; after = steps[k + 1] || null; break; }
+    }
+    var toNext = next ? route.cum[next.idx] - pr.along : left;
+    $("nav-arrow").innerHTML = turnSvg(next);
+    $("nav-dist").textContent = fmtDist(Math.max(0, toNext));
+    $("nav-verb").textContent = stepVerb(next);
+    $("nav-street").textContent = stepStreet(next);
+    var thenEl = $("nav-then");
+    if (next && after && next.type !== "arrive" && route.cum[after.idx] - route.cum[next.idx] < 150) {
+      thenEl.innerHTML = esc(t("route.then")) + " " + turnSvg(after) + " " + esc(stepVerb(after));
+      thenEl.hidden = false;
+    } else thenEl.hidden = true;
+    nav.left = left;
+    nav.leftTime = route.res.duration * left / total;
+    if (sheetSpec && sheetSpec.kind === "nav") renderSheet();
+    drawRoute(pr.seg, pr.at);
+  }
+
+  // ------------------------------------------------------------------ settings
+  function offlineState() {
+    if (!("serviceWorker" in navigator) || !window.isSecureContext) return "no";
+    return navigator.serviceWorker.controller ? "ok" : "pending";
+  }
+  function settingsSpec() {
+    return {
+      kind: "settings",
+      html: function () {
+        var off = offlineState();
+        var langs = Object.keys(LANGS).map(function (code) {
+          return '<option value="' + code + '"' + (code === lang ? " selected" : "") + ">" + esc(LANGS[code]["lang.name"] || code) + "</option>";
+        }).join("");
+        var sw = function (style, key) { return '<div class="sw" style="' + style + '"></div><div>' + esc(t(key)) + "</div>"; };
+        var h = "<h2>" + esc(t("settings.title")) + "</h2>" +
+          '<div class="set-row"><label for="set-lang">' + esc(t("settings.language")) + '</label><select id="set-lang" data-change="lang">' + langs + "</select></div>" +
+          '<div class="set-row"><label for="set-bm">' + esc(t("settings.basemap")) + '<span class="muted">' + esc(t("settings.basemapNote")) + "</span></label>" +
+          '<span class="switch"><input type="checkbox" id="set-bm" data-change="basemap"' + (map.hasLayer(tiles) ? " checked" : "") + "><span></span></span></div>" +
+          '<div class="set-row"><span><b>' + esc(t("settings.offline")) + '</b></span><span class="status' + (off === "ok" ? " ok" : "") + '">' +
+          esc(t("settings.offline." + off)) + "</span></div>" +
+          '<details class="more"><summary>' + esc(t("settings.legend")) + '</summary><div class="legend">' +
+          sw("background:#3b82f6;opacity:.6;border:1px solid #1d4ed8", "legend.apartments") +
+          sw("background:#9ca3af;opacity:.6;border:1px solid #6b7280", "legend.other") +
+          sw("background:#ff5f14;border-radius:9px", "legend.stair") +
+          sw("background:#fff;border:1.5px solid #ff5f14;border-radius:9px", "legend.entranceNum") +
+          sw("background:#a78bfa;border-radius:9px", "legend.override") +
+          sw("background:#fff3bf;border:2px solid #c9a227", "legend.mainRoad") +
+          sw("background:#fff;border:2px solid #c3bcae", "legend.street") +
+          sw("background:#a9cdee", "legend.water") +
+          sw("background:#d6ebc8", "legend.park") + "</div></details>";
+        if (stats) {
+          var pct = function (a, b) { return b ? Math.round(100 * a / b) + "%" : "–"; };
+          var tr = function (key, val) { return "<tr><td>" + esc(t(key)) + '</td><td class="n">' + val + "</td></tr>"; };
+          h += '<details class="more"><summary>' + esc(t("cov.title")) + "</summary><table>" +
+            tr("cov.blocks", stats.apartments) +
+            tr("cov.withNumber", stats.apartments_labelled + " (" + pct(stats.apartments_labelled, stats.apartments) + ")") +
+            tr("cov.withStairs", stats.apartments_with_stairs + " (" + pct(stats.apartments_with_stairs, stats.apartments) + ")") +
+            tr("cov.entrances", stats.entrances + " / " + stats.entrances_labelled) +
+            (stats.entrances_numbered != null ? tr("cov.entrancesNum", stats.entrances_numbered + " (" + pct(stats.entrances_numbered, stats.entrances) + ")") : "") +
+            tr("cov.overrides", overrideCount) + "</table>";
+          if (stats.neighbourhoods && stats.neighbourhoods.length) {
+            h += "<h3>" + esc(t("nb.title")) + "</h3><table><tr><th>" + esc(t("nb.name")) + '</th><th class="n">' + esc(t("nb.blocks")) +
+              '</th><th class="n">' + esc(t("nb.numbered")) + '</th><th class="n">' + esc(t("nb.stairs")) + "</th></tr>" +
+              stats.neighbourhoods.map(function (n) {
+                return "<tr><td>" + esc(n.name) + '</td><td class="n">' + n.blocks + '</td><td class="n">' + pct(n.labelled, n.blocks) +
+                  '</td><td class="n">' + pct(n.with_stairs, n.blocks) + "</td></tr>";
+              }).join("") + "</table>";
+          }
+          h += "</details>";
+        }
+        return h + '<p class="muted">' + esc(t("info.footer", { ts: (stats && (stats.osm_timestamp || stats.generated)) || "–" })) + "</p>";
+      },
+      acts: {
+        lang: function (el) { setLanguage(el.value); },
+        basemap: function (el) { setBasemap(el.checked, true); },
+      },
+    };
+  }
+  $("btn-settings").addEventListener("click", function () {
+    if (sheetSpec && sheetSpec.kind === "settings") closeSheet(); else openSheet(settingsSpec());
+  });
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener && navigator.serviceWorker.addEventListener("controllerchange", function () {
+      if (sheetSpec && sheetSpec.kind === "settings") renderSheet();
     });
   }
 
@@ -1008,7 +1371,8 @@
     });
   }
 
-  setBasemap(readPref() === "1", false);
+  setBasemap(readPref(PREF.basemap) === "1", false);
+  initLocation();
 
-  window.__blokk = { map: map, streetStats: function () { return streetStats; }, renderLabels: renderLabels, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
+  window.__blokk = { map: map, route: function () { return route; }, nav: function () { return nav; }, loc: function () { return loc; }, streetStats: function () { return streetStats; }, renderLabels: renderLabels, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
 })();
