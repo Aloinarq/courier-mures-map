@@ -127,5 +127,11 @@
   "nb.stairs": "Lépcsőh.",
   "nb.title": "Negyedenként",
 
-  "info.footer": "OSM adatok állapota: {ts}. Adatok: © OpenStreetMap közreműködők (ODbL). Ha egy blokkon hiányzik a szám, írd be a data/overrides.csv fájlba, vagy pótold közvetlenül az OpenStreetMapen."
+  "info.footer": "OSM adatok állapota: {ts}. Adatok: © OpenStreetMap közreműködők (ODbL). Ha egy blokkon hiányzik a szám, írd be a data/overrides.csv fájlba, vagy pótold közvetlenül az OpenStreetMapen.",
+  "traffic.title": "Élő forgalom",
+  "traffic.note": "TomTom-adat, 3 percenként frissül. Csak ott látszik, ahol a szokásosnál lassabb a forgalom. Internet kell hozzá.",
+  "traffic.fail": "Az élő forgalom most nem tölt be – ellenőrizd a kapcsolatot.",
+  "legend.trafficSlow": "Forgalom: lassabb a szokásosnál",
+  "legend.trafficJam": "Forgalom: torlódás",
+  "legend.trafficStop": "Forgalom: áll"
 };

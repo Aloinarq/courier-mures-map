@@ -10,7 +10,8 @@
   // tiles are only cached as they are viewed (sw.js); our own street layer works without them.
   var TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   var OSM_ATTRIB = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
-  var PREF = { basemap: "blokk.basemap", mode: "blokk.mode", locIntro: "blokk.locIntro" };
+  var PREF = { basemap: "blokk.basemap", mode: "blokk.mode", locIntro: "blokk.locIntro", traffic: "blokk.traffic" };
+  var CONFIG = window.BLOKK_CONFIG || {};
   function readPref(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function writePref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
 
@@ -163,6 +164,41 @@
   var tileErrors = 0;
   tiles.on("tileerror", function () { if (++tileErrors === 4) toast(t("toast.tilesFail"), 5000); });
   tiles.on("tileload", function () { tileErrors = 0; });
+  // ---------- live traffic (TomTom Traffic Flow tiles: transparent, only where traffic is slower than usual)
+  // Needs internet by nature; when the key is missing the switch is hidden, when offline the layer stays empty.
+  map.createPane("traffic").style.zIndex = 360;   // over our roads, under the buildings and the route
+  map.getPane("traffic").style.pointerEvents = "none";
+  var TRAFFIC_REFRESH_MS = 3 * 60 * 1000;         // TomTom updates flow about every minute; 3 min keeps us well inside the free quota
+  var trafficLayer = null, trafficTimer = null, trafficErrors = 0;
+  function trafficUrl() {
+    return "https://api.tomtom.com/traffic/map/4/tile/flow/relative-delay/{z}/{x}/{y}.png?tileSize=256&key=" +
+      encodeURIComponent(CONFIG.tomtomKey) + "&t=" + Math.floor(Date.now() / TRAFFIC_REFRESH_MS);
+  }
+  function trafficOn() { return !!trafficLayer && map.hasLayer(trafficLayer); }
+  function setTraffic(on, remember) {
+    if (!CONFIG.tomtomKey) return;
+    if (remember) writePref(PREF.traffic, on ? "1" : "0");
+    if (!trafficLayer) {
+      trafficLayer = L.tileLayer(trafficUrl(), {
+        pane: "traffic", minZoom: 11, maxZoom: 19, maxNativeZoom: 18, opacity: 0.9, crossOrigin: true,
+        attribution: 'Traffic &copy; <a href="https://www.tomtom.com/" target="_blank" rel="noopener">TomTom</a>',
+      });
+      trafficLayer.on("tileerror", function () { if (++trafficErrors === 4) toast(t("traffic.fail"), 5000); });
+      trafficLayer.on("tileload", function () { trafficErrors = 0; });
+    }
+    clearInterval(trafficTimer);
+    if (!on) { if (map.hasLayer(trafficLayer)) map.removeLayer(trafficLayer); return; }
+    trafficErrors = 0;
+    trafficLayer.setUrl(trafficUrl());
+    if (!map.hasLayer(trafficLayer)) trafficLayer.addTo(map);
+    trafficTimer = setInterval(function () {
+      if (document.visibilityState === "visible" && navigator.onLine !== false) trafficLayer.setUrl(trafficUrl());
+    }, TRAFFIC_REFRESH_MS);
+  }
+  document.addEventListener("visibilitychange", function () {  // back from the background: fresh traffic at once
+    if (document.visibilityState === "visible" && trafficOn()) trafficLayer.setUrl(trafficUrl());
+  });
+
   function setBasemap(on, remember) {
     if (remember) writePref(PREF.basemap, on ? "1" : "0");
     tileErrors = 0;
@@ -1313,6 +1349,8 @@
         var sw = function (style, key) { return '<div class="sw" style="' + style + '"></div><div>' + esc(t(key)) + "</div>"; };
         var h = "<h2>" + esc(t("settings.title")) + "</h2>" +
           '<div class="set-row"><label for="set-lang">' + esc(t("settings.language")) + '</label><select id="set-lang" data-change="lang">' + langs + "</select></div>" +
+          (CONFIG.tomtomKey ? '<div class="set-row"><label for="set-tr">' + esc(t("traffic.title")) + '<span class="muted">' + esc(t("traffic.note")) + "</span></label>" +
+            '<span class="switch"><input type="checkbox" id="set-tr" data-change="traffic"' + (trafficOn() ? " checked" : "") + "><span></span></span></div>" : "") +
           '<div class="set-row"><label for="set-bm">' + esc(t("settings.basemap")) + '<span class="muted">' + esc(t("settings.basemapNote")) + "</span></label>" +
           '<span class="switch"><input type="checkbox" id="set-bm" data-change="basemap"' + (map.hasLayer(tiles) ? " checked" : "") + "><span></span></span></div>" +
           '<div class="set-row"><span><b>' + esc(t("settings.offline")) + '</b></span><span class="status' + (off === "ok" ? " ok" : "") + '">' +
@@ -1326,7 +1364,9 @@
           sw("background:#fff3bf;border:2px solid #c9a227", "legend.mainRoad") +
           sw("background:#fff;border:2px solid #c3bcae", "legend.street") +
           sw("background:#a9cdee", "legend.water") +
-          sw("background:#d6ebc8", "legend.park") + "</div></details>";
+          sw("background:#d6ebc8", "legend.park") +
+          (CONFIG.tomtomKey ? sw("background:#f8a33a", "legend.trafficSlow") + sw("background:#e3262b", "legend.trafficJam") +
+            sw("background:#8b1a1e", "legend.trafficStop") : "") + "</div></details>";
         if (stats) {
           var pct = function (a, b) { return b ? Math.round(100 * a / b) + "%" : "–"; };
           var tr = function (key, val) { return "<tr><td>" + esc(t(key)) + '</td><td class="n">' + val + "</td></tr>"; };
@@ -1352,6 +1392,7 @@
       acts: {
         lang: function (el) { setLanguage(el.value); },
         basemap: function (el) { setBasemap(el.checked, true); },
+        traffic: function (el) { setTraffic(el.checked, true); },
       },
     };
   }
@@ -1372,7 +1413,8 @@
   }
 
   setBasemap(readPref(PREF.basemap) === "1", false);
+  setTraffic(readPref(PREF.traffic) !== "0", false);  // on by default when a key is configured
   initLocation();
 
-  window.__blokk = { map: map, route: function () { return route; }, nav: function () { return nav; }, loc: function () { return loc; }, streetStats: function () { return streetStats; }, renderLabels: renderLabels, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
+  window.__blokk = { map: map, trafficOn: trafficOn, route: function () { return route; }, nav: function () { return nav; }, loc: function () { return loc; }, streetStats: function () { return streetStats; }, renderLabels: renderLabels, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
 })();

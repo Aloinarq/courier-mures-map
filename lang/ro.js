@@ -127,5 +127,11 @@
   "nb.stairs": "Scări",
   "nb.title": "Pe cartiere",
 
-  "info.footer": "Datele OSM din {ts}. Date: © contribuitorii OpenStreetMap (ODbL). Dacă un bloc nu are număr, adaugă-l în data/overrides.csv sau direct în OpenStreetMap."
+  "info.footer": "Datele OSM din {ts}. Date: © contribuitorii OpenStreetMap (ODbL). Dacă un bloc nu are număr, adaugă-l în data/overrides.csv sau direct în OpenStreetMap.",
+  "traffic.title": "Trafic în timp real",
+  "traffic.note": "Date TomTom, actualizate la fiecare 3 minute. Apare doar unde traficul e mai lent decât de obicei. Necesită internet.",
+  "traffic.fail": "Traficul în timp real nu se încarcă acum – verifică conexiunea.",
+  "legend.trafficSlow": "Trafic: mai lent decât de obicei",
+  "legend.trafficJam": "Trafic: aglomerat",
+  "legend.trafficStop": "Trafic: blocat"
 };
