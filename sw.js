@@ -1,12 +1,12 @@
 /* Service worker: the app, its data and fonts work offline; OpenStreetMap tiles are cached only as you view them
    (their usage policy forbids bulk downloading). */
-var VERSION = "v13";
+var VERSION = "v14";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-osm-v1";
 var MAX_TILES = 3000;                 // roughly 50 MB of viewed tiles
 var TILE_MAX_AGE = 7 * 24 * 3600e3;   // refresh a viewed tile after a week (OSM tile policy)
 var SHELL_FILES = [
-  "./", "index.html", "config.js", "app.js", "route.js", "style.css", "manifest.webmanifest",
+  "./", "index.html", "config.js", "app.js", "route.js", "route-worker.js", "style.css", "manifest.webmanifest",
   "lang/en.js", "lang/hu.js", "lang/ro.js",
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
   "fonts/google-sans-latin-wght-normal.woff2", "fonts/google-sans-latin-ext-wght-normal.woff2",
@@ -15,7 +15,10 @@ var SHELL_FILES = [
 ];
 
 self.addEventListener("install", function (e) {
-  e.waitUntil(caches.open(SHELL).then(function (c) { return c.addAll(SHELL_FILES); }).then(function () { return self.skipWaiting(); }));
+  // fresh copies, not whatever the browser's HTTP cache still holds
+  e.waitUntil(caches.open(SHELL).then(function (c) {
+    return c.addAll(SHELL_FILES.map(function (u) { return new Request(u, { cache: "reload" }); }));
+  }).then(function () { return self.skipWaiting(); }));
 });
 
 self.addEventListener("activate", function (e) {
@@ -58,16 +61,16 @@ self.addEventListener("fetch", function (e) {
   }
   if (url.origin !== self.location.origin) return;
 
-  // Own files: network first (so updated data shows up), cache fallback when offline.
-  e.respondWith(fetch(req).then(function (r) {
-    if (r.ok) {
-      var copy = r.clone();
-      caches.open(SHELL).then(function (c) { c.put(req, copy); });
-    }
-    return r;
-  }).catch(function () {
-    return caches.match(req, { ignoreSearch: true }).then(function (hit) {
-      return hit || caches.match("index.html");
+  // Own files: the saved copy at once (a weak signal never holds up the start), refreshed in the
+  // background for the next start. A new app version replaces the whole set when VERSION changes.
+  e.respondWith(caches.open(SHELL).then(function (c) {
+    return c.match(req, { ignoreSearch: true }).then(function (hit) {
+      var net = fetch(req).then(function (r) {
+        if (r.ok) return c.put(req, r.clone()).then(function () { return r; });
+        return r;
+      });
+      if (hit) { e.waitUntil(net.catch(function () { /* offline: the saved copy stays */ })); return hit; }
+      return net.catch(function () { return c.match("index.html"); });
     });
   }));
 });

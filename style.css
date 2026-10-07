@@ -220,37 +220,13 @@ td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
   box-shadow: var(--shadow); animation: drop .3s var(--ease-out); }
 body.navigating #toast { top: calc(150px + var(--safe-top)); }
 
-/* ---------- map labels ---------- */
-.lbl, .stair, .slbl, .me, .dest-pin { background: transparent; border: 0; }
-.lbl span { position: absolute; transform: translate(-50%, -50%) rotate(var(--bearing, 0deg)); white-space: nowrap; pointer-events: none;
-  font: 700 13px/1 var(--font); color: var(--plate-deep);
-  text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 5px #fff; }
-.lbl.other span { color: #374151; font-size: 12px; font-weight: 500; }
-.lbl.z18 span { font-size: 15px; }
-.lbl.ovr span { color: #5b21b6; }
-.stair span { position: absolute; transform: translate(-50%, -50%) rotate(var(--bearing, 0deg)); white-space: nowrap; pointer-events: none;
-  background: var(--signal); color: #fff; font: 700 11.5px/1 var(--font);
-  padding: 3px 6px 2px; border-radius: 999px; border: 1.5px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
-.stair.num span { background: #fff; color: var(--signal-deep); border: 1.5px solid var(--signal); }
-.stair.nolabel span { padding: 0; width: 9px; height: 9px; }
-.stair.ovr span { background: #7c3aed; }
-.slbl span { position: absolute; white-space: nowrap; pointer-events: none; font: 500 12px/1 var(--font); color: #57534e;
-  text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
-.slbl.major span { color: #3f3a36; }
+/* ---------- map labels: drawn on a canvas (drawLabels in app.js) ---------- */
+.me, .dest-pin { background: transparent; border: 0; }
 
 /* heading-up navigation: the map element itself is turned (see enterRotation in app.js) */
 #map.rotated { position: fixed; inset: auto; will-change: transform; }
 
-/* named places: small enamel badge + name; counter-rotated like the other labels */
-.poi { background: transparent; border: 0; }
-.poi-in { position: absolute; left: -11px; top: -11px; display: flex; align-items: center; gap: 4px; white-space: nowrap;
-  transform: rotate(var(--bearing, 0deg)); transform-origin: 11px 11px; cursor: pointer; }
-.poi-in i { flex: none; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: #fff; color: var(--plate);
-  box-shadow: 0 0 0 1.5px var(--plate), 0 1px 3px rgba(12, 36, 84, .35); }
-.poi-in i svg { width: 14px; height: 14px; stroke-width: 2.2; }
-.poi-in b { font: 500 12px/1 var(--font); color: #2f3a52; text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
-.poi.g-food .poi-in i, .poi.g-grocery .poi-in i, .poi.g-mall .poi-in i { color: #b4470b; box-shadow: 0 0 0 1.5px #d9662a, 0 1px 3px rgba(0,0,0,.3); }
-.poi.g-pharmacy .poi-in i, .poi.g-health .poi-in i { color: #0d7a50; box-shadow: 0 0 0 1.5px #1b9a68, 0 1px 3px rgba(0,0,0,.3); }
+/* named places in the search results and the place card (the map badges are drawn on the label canvas) */
 #results .r-num.poi { background: #fff; color: var(--plate); box-shadow: inset 0 0 0 2px var(--plate); }
 #results .r-num.poi svg { width: 22px; height: 22px; }
 #results .r-num.poi.g-food, #results .r-num.poi.g-grocery, #results .r-num.poi.g-mall { color: #b4470b; box-shadow: inset 0 0 0 2px #d9662a; }
