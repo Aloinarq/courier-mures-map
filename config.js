@@ -5,5 +5,5 @@
    who opens the site, which is normal for map keys: in the TomTom dashboard, restrict it to
    the domain aloinarq.github.io so other websites cannot use it, and to the Traffic API product. */
 window.BLOKK_CONFIG = {
-  tomtomKey: "",
+  tomtomKey: "7ctNjfnVoNuh3cRkpNMYMp276tiYnjbs",
 };
