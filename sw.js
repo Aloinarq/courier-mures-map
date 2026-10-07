@@ -1,6 +1,6 @@
 /* Service worker: the app, its data and fonts work offline; OpenStreetMap tiles are cached only as you view them
    (their usage policy forbids bulk downloading). */
-var VERSION = "v11";
+var VERSION = "v12";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-osm-v1";
 var MAX_TILES = 3000;                 // roughly 50 MB of viewed tiles
@@ -11,7 +11,7 @@ var SHELL_FILES = [
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
   "fonts/google-sans-latin-wght-normal.woff2", "fonts/google-sans-latin-ext-wght-normal.woff2",
   "icons/icon-192.png", "icons/icon-512.png",
-  "data/blocks.geojson", "data/entrances.geojson", "data/roads.geojson", "data/context.geojson", "data/overrides.csv", "data/stats.json",
+  "data/blocks.geojson", "data/entrances.geojson", "data/roads.geojson", "data/context.geojson", "data/pois.geojson", "data/overrides.csv", "data/stats.json",
 ];
 
 self.addEventListener("install", function (e) {

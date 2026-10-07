@@ -16,12 +16,14 @@ Outputs:
   data/stats.json          coverage numbers (also printed)
   data/roads.geojson       named/usable streets as LineStrings (our own street layer)
   data/context.geojson     river, lakes, big parks, railways (orientation only)
-  data/raw_roads.json, data/raw_context.json   untouched Overpass responses (gitignored)
+  data/pois.geojson        named places people search for by name (Profi, McDonald's, pharmacies, schools…)
+  data/raw_roads.json, data/raw_context.json, data/raw_pois.json   untouched Overpass responses (gitignored)
 
 Usage:
   python3 fetch_data.py              # download + process
   python3 fetch_data.py --from-raw   # re-process the raw_*.json files only
   python3 fetch_data.py --roads-only # (re)download + rebuild only roads/context, keep blocks
+  python3 fetch_data.py --pois-only  # (re)download + rebuild only the named places
 
 Standard library only – no pip install needed.
 """
@@ -46,6 +48,7 @@ DATA = os.path.join(HERE, "data")
 RAW_PATH = os.path.join(DATA, "raw_overpass.json")
 RAW_ROADS_PATH = os.path.join(DATA, "raw_roads.json")
 RAW_CONTEXT_PATH = os.path.join(DATA, "raw_context.json")
+RAW_POIS_PATH = os.path.join(DATA, "raw_pois.json")
 
 BBOX = (46.49, 24.47, 46.60, 24.66)  # south, west, north, east
 ENDPOINTS = [
@@ -96,6 +99,30 @@ CONTEXT_QUERY = """
   way["railway"="rail"]({b});
 );
 out tags geom qt;
+"""
+
+# named places: everything people look up by name rather than by address
+POI_QUERY = """
+[out:json][timeout:{t}][maxsize:536870912];
+(
+  nwr["name"]["amenity"]({b});
+  nwr["name"]["shop"]({b});
+  nwr["name"]["tourism"]({b});
+  nwr["name"]["leisure"]({b});
+  nwr["name"]["office"]({b});
+  nwr["name"]["healthcare"]({b});
+  nwr["name"]["craft"]({b});
+  nwr["name"]["historic"]({b});
+  nwr["name"]["club"]({b});
+  nwr["name"]["sport"]({b});
+  nwr["name"]["railway"~"^(station|halt)$"]({b});
+  nwr["name"]["public_transport"="station"]({b});
+  nwr["name"]["aeroway"="aerodrome"]({b});
+  nwr["brand"]["shop"]({b});
+  nwr["brand"]["amenity"]({b});
+  nwr["name"]["building"~"^(school|hospital|church|cathedral|university|college|kindergarten|public|civic|government|commercial|retail|office|hotel|stadium|sports_hall|train_station|supermarket|mosque|synagogue)$"]({b});
+);
+out tags center qt;
 """
 
 # ----------------------------------------------------------------------------
@@ -802,6 +829,72 @@ def build_roads_and_context(roads_raw, context_raw, meta):
     return {"roads": len(rf), "street_names": len(named), "roads_bytes": rs, "context_bytes": cs}
 
 
+# ----------------------------------------------------------------------------
+# Named places (POIs)
+# ----------------------------------------------------------------------------
+
+POI_KEYS = ("amenity", "shop", "healthcare", "tourism", "leisure", "office", "craft", "historic", "club",
+            "railway", "public_transport", "aeroway", "sport", "building")
+POI_SKIP = {("amenity", "parking_space"), ("amenity", "bench"), ("amenity", "waste_basket"), ("amenity", "vending_machine"),
+            ("amenity", "bicycle_parking"), ("amenity", "shelter"), ("amenity", "parking_entrance"), ("leisure", "picnic_table"),
+            ("amenity", "grave_yard"), ("leisure", "pitch"), ("amenity", "loading_dock"), ("amenity", "toilets")}
+ALT_NAME_KEYS = ("name:hu", "name:ro", "name:en", "alt_name", "old_name", "short_name", "official_name", "brand", "operator")
+
+
+def process_pois(raw):
+    feats, kinds = [], Counter()
+    seen = defaultdict(list)  # (folded name, kind) -> [(x, y)]
+    for e in raw.get("elements", []):
+        t = e.get("tags", {})
+        name = (t.get("name") or t.get("brand") or "").strip()
+        if not name:
+            continue
+        if e["type"] == "node":
+            lat, lon = e["lat"], e["lon"]
+        elif e.get("center"):
+            lat, lon = e["center"]["lat"], e["center"]["lon"]
+        else:
+            continue
+        key = next((k for k in POI_KEYS if t.get(k) and t.get(k) not in ("yes", "no")), None)
+        if not key:
+            continue
+        val = t[key]
+        if (key, val) in POI_SKIP:
+            continue
+        # the same place is often mapped twice (a node in a named building): keep one
+        x, y = xy(lat, lon)
+        dup_key = (fold(name), val)
+        if any(math.hypot(x - a, y - b) < 40 for a, b in seen[dup_key]):
+            continue
+        seen[dup_key].append((x, y))
+        props = {"n": name, "k": key, "v": val}
+        alts = []
+        for k in ALT_NAME_KEYS:
+            v = (t.get(k) or "").strip()
+            if v and fold(v) != fold(name) and fold(v) not in [fold(a) for a in alts]:
+                alts.append(v)
+        if alts:
+            props["alt"] = alts
+        for out, k in (("st", "addr:street"), ("hn", "addr:housenumber"), ("oh", "opening_hours"),
+                       ("ph", "phone"), ("ph", "contact:phone"), ("w", "website"), ("w", "contact:website"),
+                       ("cu", "cuisine"), ("lvl", "level")):
+            v = (t.get(k) or "").strip()
+            if v and out not in props:
+                props[out] = v[:120]
+        feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]},
+                      "properties": props})
+        kinds[key + "=" + val] += 1
+    return feats, kinds
+
+
+def build_pois(raw, meta):
+    feats, kinds = process_pois(raw)
+    size = write_geojson(os.path.join(DATA, "pois.geojson"), feats, meta)
+    print(f"\npois.geojson: {len(feats)} named places, {size/1e6:.2f} MB")
+    print("  most common:", dict(kinds.most_common(25)))
+    return {"pois": len(feats), "pois_bytes": size}
+
+
 def report(feats, ent_feats, places, link_method, loose_addr):
     polys = [f for f in feats if f["properties"]["kind"] != "address"]
     apts = [f for f in polys if f["properties"]["kind"] == "apartments"]
@@ -916,6 +1009,7 @@ def main():
     os.makedirs(DATA, exist_ok=True)
     from_raw = "--from-raw" in sys.argv
     roads_only = "--roads-only" in sys.argv
+    pois_only = "--pois-only" in sys.argv
     q_roads, q_context = roads_queries()
 
     def load(path, query, label):
@@ -926,7 +1020,7 @@ def main():
             return raw
         return load_or_download(path, query, label)
 
-    if not roads_only:
+    if not (roads_only or pois_only):
         if from_raw:
             with open(RAW_PATH, encoding="utf-8") as fh:
                 raw = json.load(fh)
@@ -955,13 +1049,21 @@ def main():
         print("\nwrote data/blocks.geojson, data/entrances.geojson, data/stats.json")
         print(f"OSM data timestamp: {osm_ts}")
 
-    if from_raw and not (os.path.exists(RAW_ROADS_PATH) and os.path.exists(RAW_CONTEXT_PATH)):
-        print("\n(no raw_roads.json / raw_context.json yet: run without --from-raw to fetch roads)")
-        return
-    roads_raw = load(RAW_ROADS_PATH, q_roads, "roads")
-    context_raw = load(RAW_CONTEXT_PATH, q_context, "context (river, water, parks, railways)")
-    ts = (roads_raw.get("osm3s") or {}).get("timestamp_osm_base")
-    info = build_roads_and_context(roads_raw, context_raw, {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": ts})
+    info = {}
+    meta_of = lambda raw: {"source": "© OpenStreetMap contributors, ODbL", "osm_timestamp": (raw.get("osm3s") or {}).get("timestamp_osm_base")}
+    if not pois_only:
+        if from_raw and not (os.path.exists(RAW_ROADS_PATH) and os.path.exists(RAW_CONTEXT_PATH)):
+            print("\n(no raw_roads.json / raw_context.json yet: run without --from-raw to fetch roads)")
+        else:
+            roads_raw = load(RAW_ROADS_PATH, q_roads, "roads")
+            context_raw = load(RAW_CONTEXT_PATH, q_context, "context (river, water, parks, railways)")
+            info.update(build_roads_and_context(roads_raw, context_raw, meta_of(roads_raw)))
+    if not roads_only:
+        if from_raw and not os.path.exists(RAW_POIS_PATH):
+            print("\n(no raw_pois.json yet: run without --from-raw to fetch named places)")
+        else:
+            pois_raw = load(RAW_POIS_PATH, POI_QUERY.format(t=OVERPASS_TIMEOUT, b="{},{},{},{}".format(*BBOX)), "named places")
+            info.update(build_pois(pois_raw, meta_of(pois_raw)))
     sp = os.path.join(DATA, "stats.json")
     if os.path.exists(sp):
         with open(sp, encoding="utf-8") as fh:
