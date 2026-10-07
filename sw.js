@@ -1,6 +1,6 @@
 /* Service worker: the app, its data and fonts work offline; OpenStreetMap tiles are cached only as you view them
    (their usage policy forbids bulk downloading). */
-var VERSION = "v7";
+var VERSION = "v8";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-osm-v1";
 var MAX_TILES = 3000;                 // roughly 50 MB of viewed tiles
@@ -9,10 +9,7 @@ var SHELL_FILES = [
   "./", "index.html", "app.js", "route.js", "style.css", "manifest.webmanifest",
   "lang/en.js", "lang/hu.js", "lang/ro.js",
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
-  "fonts/big-shoulders-display-latin-800-normal.woff2", "fonts/big-shoulders-display-latin-ext-800-normal.woff2",
-  "fonts/big-shoulders-display-latin-900-normal.woff2", "fonts/big-shoulders-display-latin-ext-900-normal.woff2",
-  "fonts/atkinson-hyperlegible-latin-400-normal.woff2", "fonts/atkinson-hyperlegible-latin-ext-400-normal.woff2",
-  "fonts/atkinson-hyperlegible-latin-700-normal.woff2", "fonts/atkinson-hyperlegible-latin-ext-700-normal.woff2",
+  "fonts/google-sans-latin-wght-normal.woff2", "fonts/google-sans-latin-ext-wght-normal.woff2",
   "icons/icon-192.png", "icons/icon-512.png",
   "data/blocks.geojson", "data/entrances.geojson", "data/roads.geojson", "data/context.geojson", "data/overrides.csv", "data/stats.json",
 ];

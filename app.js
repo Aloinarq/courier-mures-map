@@ -328,9 +328,9 @@
 
   // ---------- street name labels
   var measureCtx = document.createElement("canvas").getContext("2d");
-  var STREET_FONT = '700 12px Atkinson, "Segoe UI", system-ui, sans-serif';
+  var STREET_FONT = '500 12px "Google Sans", Roboto, system-ui, sans-serif';
   function textW(s) { measureCtx.font = STREET_FONT; return measureCtx.measureText(s).width; }
-  function textD(s, px) { measureCtx.font = "800 " + px + 'px "Big Shoulders", "Arial Narrow", sans-serif'; return measureCtx.measureText(s).width; }
+  function textD(s, px) { measureCtx.font = "700 " + px + 'px "Google Sans", Roboto, system-ui, sans-serif'; return measureCtx.measureText(s).width; }
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (blocks.length) renderLabels(); });
   function shortName(n) {
     return n.replace(/^Strada /, "Str. ").replace(/^Bulevardul /, "B-dul ").replace(/^Aleea /, "Al. ")
@@ -606,7 +606,7 @@
     vis.forEach(function (f) {
       var p = f.properties;
       var cls = "lbl" + (p.kind === "apartments" ? "" : " other") + (z >= 18 ? " z18" : "") + (p.override ? " ovr" : "");
-      var cp = map.latLngToContainerPoint(p.lp), hw = textD(p.label, z >= 18 ? 18 : 15) / 2 + 3;
+      var cp = map.latLngToContainerPoint(p.lp), hw = textD(p.label, z >= 18 ? 15 : 13) / 2 + 3;
       var box = [cp.x - hw, cp.y - 9, cp.x + hw, cp.y + 9];
       var mk = L.marker(p.lp, {
         icon: L.divIcon({ className: cls, html: "<span>" + esc(p.label) + "</span>", iconSize: [0, 0] }),
@@ -635,7 +635,7 @@
     }
     sv.forEach(function (e) {
       var g = e.geometry.coordinates, l = e.properties.label;
-      var sp = map.latLngToContainerPoint([g[1], g[0]]), sw = l ? textD(l.replace(/^(Sc|nr)\. /, ""), 13) / 2 + 8 : 6;
+      var sp = map.latLngToContainerPoint([g[1], g[0]]), sw = l ? textD(l.replace(/^(Sc|nr)\. /, ""), 11.5) / 2 + 8 : 6;
       boxes.push([sp.x - sw, sp.y - 9, sp.x + sw, sp.y + 9]);
       stairLayer.addLayer(L.marker([g[1], g[0]], {
         icon: L.divIcon({ className: "stair" + (l ? "" : " nolabel") + (l && l.indexOf("nr. ") === 0 ? " num" : "") + (e.properties.override ? " ovr" : ""),

@@ -92,6 +92,6 @@ A szövegek a `lang/` mappában vannak: `en.js`, `hu.js`, `ro.js`. Mindhárom f�
 - `lang/`: angol, magyar, román szövegek
 - `sw.js`, `manifest.webmanifest`: offline mód / telepíthető app
 - `vendor/leaflet/`: Leaflet 1.9.4 helyben, CDN nélkül
-- `fonts/`: Big Shoulders Display és Atkinson Hyperlegible (SIL OFL), helyben, hogy offline is meglegyenek
+- `fonts/`: Google Sans (a Google Térkép betűtípusa, SIL OFL), helyben, hogy offline is meglegyen
 - `data/blocks.geojson`, `data/entrances.geojson`, `data/roads.geojson`, `data/context.geojson`, `data/stats.json`: generált adatok
 - `data/overrides.csv`: saját kiegészítések
