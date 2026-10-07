@@ -168,5 +168,14 @@
   "cat.other": "Place",
   "catw.other": "",
   "poi.hours": "Opening hours",
-  "poi.phone": "Phone"
+  "poi.phone": "Phone",
+  "loc.retry": "Use my location",
+  "loc.slow": "Still looking for your location. Check that location is switched on and allowed for this browser, then tap the button below.",
+  "ext.more": "Search TomTom for “{q}”",
+  "ext.header": "From TomTom (not in OpenStreetMap)",
+  "ext.loading": "Searching TomTom…",
+  "ext.none": "TomTom found nothing new for “{q}”.",
+  "ext.fail": "TomTom search isn't reachable right now.",
+  "ext.forbidden": "TomTom search isn't enabled for this key – turn on the Search API for it in the TomTom dashboard.",
+  "ext.source": "Source: TomTom"
 };
