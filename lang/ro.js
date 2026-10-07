@@ -133,5 +133,6 @@
   "traffic.fail": "Traficul în timp real nu se încarcă acum – verifică conexiunea.",
   "legend.trafficSlow": "Trafic: mai lent decât de obicei",
   "legend.trafficJam": "Trafic: aglomerat",
-  "legend.trafficStop": "Trafic: blocat"
+  "legend.trafficStop": "Trafic: blocat",
+  "nav.recenter": "Recentrează"
 };

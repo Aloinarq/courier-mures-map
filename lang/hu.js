@@ -133,5 +133,6 @@
   "traffic.fail": "Az élő forgalom most nem tölt be – ellenőrizd a kapcsolatot.",
   "legend.trafficSlow": "Forgalom: lassabb a szokásosnál",
   "legend.trafficJam": "Forgalom: torlódás",
-  "legend.trafficStop": "Forgalom: áll"
+  "legend.trafficStop": "Forgalom: áll",
+  "nav.recenter": "Középre"
 };
