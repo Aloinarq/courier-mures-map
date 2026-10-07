@@ -836,20 +836,22 @@
     openSheet({
       kind: "place",
       html: function () {
-        var addr = poiAddress(p), rows = [];
+        var addr = p.full || poiAddress(p), rows = [];
         if (p.oh) rows.push("<b>" + esc(t("poi.hours")) + ":</b> " + esc(p.oh));
         if (p.ph) rows.push("<b>" + esc(t("poi.phone")) + ":</b> " + p.ph.split(/[;,]/).map(function (n) {
           n = n.trim(); return '<a href="tel:' + esc(n.replace(/[^+0-9]/g, "")) + '">' + esc(n) + "</a>";
         }).join(", "));
         if (p.cu) rows.push(esc(p.cu.replace(/_/g, " ").replace(/;/g, ", ")));
         if (p.note) rows.push(esc(p.note));
+        if (p.w && /^https?:\/\//.test(p.w)) rows.push('<a href="' + esc(p.w) + '" target="_blank" rel="noopener">' + esc(p.w.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")) + "</a>");
         return '<div class="house"><div class="plate poi-plate">' + poiIcon(g) + '</div>' +
           '<div class="house-side"><span class="house-kind">' + esc(catLabel(g)) + '</span><span class="house-street poi-name">' + esc(p.n) + "</span>" +
           (addr ? '<div class="facts">' + esc(addr) + "</div>" : "") + "</div></div>" +
           (rows.length ? '<div class="poi-rows">' + rows.map(function (r) { return "<p>" + r + "</p>"; }).join("") + "</div>" : "") +
           '<div class="actions"><button class="btn go" data-act="route">' + ICON.go + esc(t("place.navigate")) + "</button>" +
           '<a class="btn ghost" href="' + gmapsUrl(at) + '" target="_blank" rel="noopener" aria-label="' + esc(t("place.mapsAria")) + '">' + ICON.ext + "Maps</a></div>" +
-          '<div class="osm-id">' + esc(t("popup.coords")) + " " + at[0].toFixed(6) + ", " + at[1].toFixed(6) + "</div>";
+          '<div class="osm-id">' + (p.src === "tomtom" ? esc(t("ext.source")) + " · " : "") +
+          esc(t("popup.coords")) + " " + at[0].toFixed(6) + ", " + at[1].toFixed(6) + "</div>";
       },
       acts: {
         route: function () {
@@ -987,6 +989,69 @@
       };
     });
   }
+  // ---------- places OpenStreetMap doesn't have: ask TomTom's Search API live (official API, same key
+  // as traffic). Results are only shown, never saved; they are marked "TomTom" everywhere.
+  var ext = { q: "", busy: false, res: null, err: null, timer: null };
+  var TT_GROUP = {
+    RESTAURANT: "food", CAFE_PUB: "food", "FAST_FOOD": "food", NIGHTLIFE: "food", PHARMACY: "pharmacy",
+    SHOPPING_CENTER: "mall", MARKET: "grocery", SHOP: "shop", HOSPITAL_POLYCLINIC: "health", DOCTOR: "health",
+    DENTIST: "health", EMERGENCY_MEDICAL_SERVICE: "health", HEALTH_CARE_SERVICE: "health", BANK: "money", CASH_DISPENSER: "money",
+    PETROL_STATION: "fuel", ELECTRIC_VEHICLE_STATION: "fuel", SCHOOL: "education", COLLEGE_UNIVERSITY: "education",
+    PLACE_OF_WORSHIP: "worship", RAILWAY_STATION: "transport", PUBLIC_TRANSPORT_STOP: "transport", PARKING_GARAGE: "transport",
+    OPEN_PARKING_AREA: "transport", AIRPORT: "transport", HOTEL_MOTEL: "hotel", GOVERNMENT_OFFICE: "public", POLICE_STATION: "public",
+    POST_OFFICE: "public", CITY_HALL: "public", CINEMA: "leisure", THEATER: "leisure", MUSEUM: "leisure", PARK_RECREATION_AREA: "leisure",
+    SPORTS_CENTER: "leisure", FITNESS_CLUB_CENTER: "leisure", IMPORTANT_TOURIST_ATTRACTION: "leisure", COMPANY: "office",
+  };
+  function extSearch(q) {
+    if (!CONFIG.tomtomKey || ext.busy) return;
+    ext.q = q; ext.busy = true; ext.res = null; ext.err = null;
+    showResults();
+    var ref = loc.pos || [map.getCenter().lat, map.getCenter().lng];
+    var url = "https://api.tomtom.com/search/2/search/" + encodeURIComponent(q) + ".json?key=" + encodeURIComponent(CONFIG.tomtomKey) +
+      "&countrySet=RO&idxSet=POI&limit=10&radius=20000&lat=" + ref[0].toFixed(5) + "&lon=" + ref[1].toFixed(5) +
+      "&language=" + ({ en: "en-GB", hu: "hu-HU", ro: "ro-RO" }[lang] || "en-GB");
+    fetch(url).then(function (r) {
+      if (r.status === 403 || r.status === 401) throw new Error("forbidden");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (j) {
+      ext.res = (j.results || []).filter(function (x) { return x.poi && x.position; }).map(function (x) {
+        var a = x.address || {}, code = ((x.poi.classifications || [])[0] || {}).code || "";
+        var f = { type: "Feature", geometry: { type: "Point", coordinates: [x.position.lon, x.position.lat] },
+          properties: { kind: "poi", src: "tomtom", n: x.poi.name, k: "tomtom", v: code.toLowerCase(),
+            st: a.streetName || "", hn: a.streetNumber || "", ph: x.poi.phone || "", w: x.poi.url || "",
+            full: a.freeformAddress || "" } };
+        f.properties._g = TT_GROUP[code] || (x.poi.categories && /shop|store/i.test(x.poi.categories.join(" ")) ? "shop" : "other");
+        return f;
+      }).filter(function (f) {  // drop what our OpenStreetMap data already has (same name within 300 m)
+        var nC = compact(f.properties.n), c = f.geometry.coordinates;
+        return !pois.some(function (o) {
+          var oc = o.geometry.coordinates;
+          return compact(o.properties.n) === nC && BlokkRouter.dist([oc[1], oc[0]], [c[1], c[0]]) < 300;  // big buildings: points can be far apart
+        });
+      });
+    }).catch(function (e) {
+      ext.err = e.message === "forbidden" ? "forbidden" : "fail";
+    }).then(function () {
+      ext.busy = false;
+      if (fold(qEl.value).trim() === fold(q).trim()) showResults();
+    });
+  }
+  function extRows(q, start) {
+    if (!CONFIG.tomtomKey || q.length < 3) return "";
+    if (ext.q !== q) return '<li class="r-more" data-ext="1" tabindex="0">' + svg('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/>') +
+      "<span>" + esc(t("ext.more", { q: q })) + "</span></li>";
+    if (ext.busy) return '<li class="r-head">' + esc(t("ext.loading")) + "</li>";
+    if (ext.err) return '<li class="r-head">' + esc(t(ext.err === "forbidden" ? "ext.forbidden" : "ext.fail")) + "</li>";
+    if (!ext.res || !ext.res.length) return '<li class="r-head">' + esc(t("ext.none", { q: q })) + "</li>";
+    return '<li class="r-head">' + esc(t("ext.header")) + "</li>" + ext.res.map(function (f, k) {
+      var p = f.properties, g = poiGroup(p);
+      return '<li data-i="' + (start + k) + '" tabindex="0"><span class="r-num poi g-' + g + '">' + poiIcon(g) + '</span><span class="r-main">' +
+        esc(p.n) + ' <span class="chip grey">TomTom</span></span><span class="r-sub">' +
+        esc([catLabel(g), p.full || poiAddress(p), fmtDist(poiDistance(f))].filter(Boolean).join(" · ")) + "</span></li>";
+    }).join("");
+  }
+
   function poiAddress(p) { return [p.st, p.hn].filter(Boolean).join(" "); }
   function poiDistance(f) {
     var ref = loc.pos || [map.getCenter().lat, map.getCenter().lng], c = f.geometry.coordinates;
@@ -1071,9 +1136,18 @@
     var v = qEl.value;
     clearEl.hidden = !v;
     if (!v.trim()) { resEl.hidden = true; resEl.innerHTML = ""; return; }
-    var r = search(v);
+    var r = search(v), q = v.trim();
+    if (ext.q && ext.q !== q) { ext.q = ""; ext.res = null; ext.err = null; }
+    // nothing of ours matches a place-like query: ask TomTom by itself after a short pause
+    clearTimeout(ext.timer);
+    if (!r.length && CONFIG.tomtomKey && q.length >= 3 && !/\d/.test(q) && ext.q !== q) {
+      ext.timer = setTimeout(function () { if (qEl.value.trim() === q) extSearch(q); }, 600);
+    }
+    var extList = ext.q === q && ext.res ? ext.res : [];
     if (!r.length) {
-      resEl.innerHTML = '<li class="r-empty">' + esc(t("search.none")) + "</li>";
+      // "nothing here" stays until TomTom has answered; then only TomTom's answer is shown
+      resEl.innerHTML = (ext.q === q ? "" : '<li class="r-empty">' + esc(t("search.none")) + "</li>") + extRows(q, 0);
+      resEl._r = extList;
     } else {
       resEl.innerHTML = r.map(function (f, i) {
         var p = f.properties;
@@ -1091,8 +1165,8 @@
         return '<li data-i="' + i + '" tabindex="0"><span class="r-num' + (p.kind === "apartments" || p.kind === "override" ? "" : " other") + '">' +
           esc(p.housenumber || p.block || p.label ? plateNum(p) : t("search.noNumber")) + '</span><span class="r-main">' + esc(p.street || p.name || p.label || "") +
           '</span><span class="r-sub">' + esc(sub) + "</span></li>";
-      }).join("");
-      resEl._r = r;
+      }).join("") + extRows(q, r.length);
+      resEl._r = r.concat(extList);
     }
     resEl.hidden = false;
   }
@@ -1104,10 +1178,12 @@
   });
   clearEl.addEventListener("click", function () { qEl.value = ""; showResults(); qEl.focus(); });
   resEl.addEventListener("keydown", function (e) {
+    if (e.target.closest("[data-ext]") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); extSearch(qEl.value.trim()); return; }
     var li = e.target.closest("li[data-i]");
     if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); goTo(resEl._r[+li.getAttribute("data-i")]); }
   });
   resEl.addEventListener("click", function (e) {
+    if (e.target.closest("[data-ext]")) { extSearch(qEl.value.trim()); return; }
     var li = e.target.closest("li[data-i]");
     if (li) goTo(resEl._r[+li.getAttribute("data-i")]);
   });
@@ -1139,7 +1215,7 @@
   // one sheet at a time: {kind, html(), acts{}, after(el), onClose(), closeAct(), compact}
   var sheetEl = $("sheet"), sheetBody = $("sheet-body"), sheetSpec = null;
   function openSheet(spec) {
-    if (sheetSpec && sheetSpec.kind !== spec.kind && sheetSpec.onClose) sheetSpec.onClose();
+    if (sheetSpec && sheetSpec.kind !== spec.kind && sheetSpec.onClose) sheetSpec.onClose(spec.kind);
     sheetSpec = spec;
     sheetEl.classList.toggle("no-close", !!spec.noClose);
     renderSheet();
@@ -1247,7 +1323,16 @@
     if (!window.isSecureContext) { toast(t("toast.locHttps"), 7000); flushWaiting(true); return; }
     if (!("geolocation" in navigator)) { toast(t("loc.unavailable"), 6000); flushWaiting(true); return; }
     loc.watchId = navigator.geolocation.watchPosition(onFix, onLocError, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
+    // a quick rough fix (Wi-Fi / cell) while the GPS warms up, so directions don't sit waiting
+    navigator.geolocation.getCurrentPosition(function (p) {
+      if (!loc.pos && p.coords.accuracy <= 500) onFix(p);
+    }, function () { /* the watch reports errors */ }, { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 });
     setLocBtn();
+  }
+  function restartLocation(follow) {  // from a tap: also re-asks the browser where it needs a user gesture
+    if (loc.watchId !== null) navigator.geolocation.clearWatch(loc.watchId);
+    loc.watchId = null;
+    startLocation(follow);
   }
   function stopLocation() {
     if (loc.watchId !== null) navigator.geolocation.clearWatch(loc.watchId);
@@ -1422,7 +1507,7 @@
   recenterBtn.addEventListener("click", resumeFollow);
   locBtn.addEventListener("click", function () {
     if (loc.watchId === null) { startLocation(true); return; }
-    if (!loc.pos) return;
+    if (!loc.pos) { restartLocation(true); return; }  // still searching: try again
     if (loc.follow && !nav.active) { loc.follow = false; setLocBtn(); return; }
     resumeFollow();
   });
@@ -1431,10 +1516,14 @@
   map.on("zoomend", function () { setTimeout(function () { map.getContainer().classList.remove("no-glide"); }, 60); });
 
   // first visit: explain before the browser asks; a site that already has permission just starts
+  // Start right away for anyone who allowed location before. Many phone browsers (Safari on iPhone,
+  // Brave) answer "prompt" here even after the user allowed it, so "granted" alone is not enough.
   function initLocation() {
+    var intro = readPref(PREF.locIntro);  // "allow", "later", or "1" from older versions (they tapped through)
     var go = function (state) {
-      if (state === "granted") startLocation(true);
-      else if (state !== "denied" && !readPref(PREF.locIntro)) showLocIntro();
+      if (state === "denied") return;
+      if (state === "granted" || intro === "allow" || intro === "1") startLocation(true);
+      else if (!intro) showLocIntro();
     };
     if (navigator.permissions && navigator.permissions.query) {
       navigator.permissions.query({ name: "geolocation" }).then(function (r) { go(r.state); }, function () { go("prompt"); });
@@ -1442,7 +1531,7 @@
   }
   function showLocIntro() {
     var done = function (allow) {
-      writePref(PREF.locIntro, "1");
+      writePref(PREF.locIntro, allow ? "allow" : "later");
       closeSheet();
       if (allow) startLocation(true);
     };
@@ -1473,6 +1562,12 @@
     casing: null, line: null, pin: null };
   var nav = { active: false, seg: 0, off: 0, lastReroute: 0, left: 0, leftTime: 0 };
 
+  // closing one route card for another (waiting -> route -> navigation) keeps the route;
+  // only leaving the route cards altogether clears it
+  function keepRouteFor(nextKind) {
+    if (nav.active || /^(route|nav)/.test(nextKind || "")) return;
+    clearRoute();
+  }
   function placeDest(f, ent) {
     var p = f.properties, num = plateNum(p);
     if (!ent) return { at: p.lp, f: f, title: num, street: p.street || "", plate: num };
@@ -1483,7 +1578,9 @@
   function planRoute(dest) {
     route.dest = dest;
     if (loc.pos) { computeRoute(true); return; }
+    route.waitStart = Date.now();
     openSheet(waitSpec());
+    setTimeout(function () { if (route.dest === dest && sheetSpec && sheetSpec.kind === "route-wait") renderSheet(); }, 12000);
     loc.waiting.push(function (err) {
       if (route.dest !== dest) return;
       if (err) openSheet(noLocSpec()); else computeRoute(true);
@@ -1577,19 +1674,24 @@
         },
         start: function () { startNav(); },
       },
-      onClose: function () { if (!nav.active) clearRoute(); },
+      onClose: keepRouteFor,
     };
   }
   function waitSpec() {
     return {
       kind: "route-wait",
       html: function () {
-        return modesHtml() + '<div class="summary"><span class="rest"><b>' + esc(t("loc.waiting")) + "</b></span></div>" + destLine() +
-          '<div class="actions"><button class="btn go" disabled>' + ICON.go + esc(t("route.start")) + "</button>" +
+        var slow = Date.now() - (route.waitStart || 0) > 11000;
+        return modesHtml() + '<div class="summary"><span class="rest"><b>' + esc(t("loc.waiting")) + "</b></span></div>" +
+          (slow ? '<p class="muted">' + esc(t("loc.slow")) + "</p>" : "") + destLine() +
+          '<div class="actions"><button class="btn go" data-act="retry">' + ICON.go + esc(t("loc.retry")) + "</button>" +
           '<a class="btn ghost" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener" aria-label="' + esc(t("place.mapsAria")) + '">' + ICON.ext + "Maps</a></div>";
       },
-      acts: { mode: function (el) { route.mode = el.getAttribute("data-mode"); writePref(PREF.mode, route.mode); renderSheet(); } },
-      onClose: function () { if (!nav.active) clearRoute(); },
+      acts: {
+        mode: function (el) { route.mode = el.getAttribute("data-mode"); writePref(PREF.mode, route.mode); renderSheet(); },
+        retry: function () { route.waitStart = Date.now(); renderSheet(); restartLocation(false); },
+      },
+      onClose: keepRouteFor,
     };
   }
   function noLocSpec() {
@@ -1599,7 +1701,7 @@
         return "<h2>" + esc(t("loc.title")) + "</h2><p>" + esc(t("loc.needed")) + "</p>" + destLine() +
           '<div class="actions"><a class="btn go" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener">' + ICON.ext + "Google Maps</a></div>";
       },
-      onClose: clearRoute,
+      onClose: keepRouteFor,
     };
   }
   function noRouteSpec() {
@@ -1610,7 +1712,7 @@
           '<div class="actions"><a class="btn go" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener">' + ICON.ext + "Google Maps</a></div>";
       },
       acts: { mode: function (el) { route.mode = el.getAttribute("data-mode"); writePref(PREF.mode, route.mode); openSheet(waitSpec()); computeRoute(true); } },
-      onClose: function () { if (!nav.active) clearRoute(); },
+      onClose: keepRouteFor,
     };
   }
 

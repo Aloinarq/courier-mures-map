@@ -168,5 +168,14 @@
   "cat.other": "Loc",
   "catw.other": "",
   "poi.hours": "Program",
-  "poi.phone": "Telefon"
+  "poi.phone": "Telefon",
+  "loc.retry": "Folosește locația mea",
+  "loc.slow": "Încă îți căutăm locația. Verifică dacă localizarea este pornită și permisă pentru acest browser, apoi atinge butonul de mai jos.",
+  "ext.more": "Caută în TomTom: „{q}”",
+  "ext.header": "Din TomTom (nu e în OpenStreetMap)",
+  "ext.loading": "Se caută în TomTom…",
+  "ext.none": "TomTom nu a găsit nimic nou pentru „{q}”.",
+  "ext.fail": "Căutarea TomTom nu este disponibilă acum.",
+  "ext.forbidden": "Căutarea TomTom nu e activată pentru această cheie – activează Search API în dashboard-ul TomTom.",
+  "ext.source": "Sursa: TomTom"
 };

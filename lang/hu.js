@@ -168,5 +168,14 @@
   "cat.other": "Hely",
   "catw.other": "",
   "poi.hours": "Nyitvatartás",
-  "poi.phone": "Telefon"
+  "poi.phone": "Telefon",
+  "loc.retry": "Helyzetem használata",
+  "loc.slow": "Még keressük a helyzeted. Nézd meg, be van-e kapcsolva a helymeghatározás, és engedélyezve van-e ennek a böngészőnek, majd koppints a lenti gombra.",
+  "ext.more": "Keresés a TomTomon: „{q}”",
+  "ext.header": "A TomTomból (nincs az OpenStreetMapen)",
+  "ext.loading": "Keresés a TomTomon…",
+  "ext.none": "A TomTom nem talált újat erre: „{q}”.",
+  "ext.fail": "A TomTom keresés most nem érhető el.",
+  "ext.forbidden": "A TomTom keresés nincs bekapcsolva ehhez a kulcshoz – kapcsold be a Search API-t a TomTom Dashboardon.",
+  "ext.source": "Forrás: TomTom"
 };
