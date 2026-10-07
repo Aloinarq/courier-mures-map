@@ -38,9 +38,9 @@ lat,lon,label,type,street,note
 | `label` | blokknál pl. `Bl. 14` vagy `14A`; lépcsőháznál elég `A` (így jelenik meg: `Sc. A`) |
 | `type` | `block` vagy `entrance` |
 | `street` | utca (nem kötelező) |
-| `note` | megjegyzés, megjelenik a buborékban (nem kötelező) |
+| `note` | megjegyzés, megjelenik az épület kártyáján (nem kötelező) |
 
-**Koordináta szerzése:** a térképen koppints az épületre. A buborék alján ott a koordináta, onnan kimásolható. Másik megoldás: Google Mapsben hosszan nyomod a pontot, és kimásolod a számokat.
+**Koordináta szerzése:** a térképen koppints az épületre. A kártya alján ott a koordináta, onnan kimásolható. Másik megoldás: Google Mapsben hosszan nyomod a pontot, és kimásolod a számokat.
 
 **Hogyan érvényesül:**
 - `block`: ha a pont egy épület körvonalán belül van, annak az épületnek a felirata lecserélődik (lila keret jelzi). Ha nincs ott épület, új lila pont kerül a térképre.
@@ -52,29 +52,35 @@ lat,lon,label,type,street,note
 
 **Tipp:** ha van kedved, ugyanezt közvetlenül az OpenStreetMapbe is beírhatod (openstreetmap.org → Szerkesztés; blokknál `addr:block`, bejáratnál `entrance=staircase` + `ref=A`). Akkor a következő `fetch_data.py` futtatás magától behozza, és mindenkinek jó lesz.
 
-## Telefonra (GitHub Pages + offline mód)
+## Weboldal mindenkinek (GitHub Pages, ingyenes)
 
-1. Készíts egy GitHub repót (pl. `courier-mures-map`, lehet nyilvános is, hiszen az adatok nyilvános OSM-adatok).
-2. A projekt mappájában:
-   ```bash
-   git init && git add . && git commit -m "Blokktérkép"
-   git branch -M main
-   git remote add origin https://github.com/FELHASZNALONEV/courier-mures-map.git
-   git push -u origin main
-   ```
-3. GitHubon: **Settings → Pages → Source: Deploy from a branch → main / (root) → Save**. Pár perc múlva elérhető ezen a címen: `https://FELHASZNALONEV.github.io/courier-mures-map/`
-4. Telefonon nyisd meg a címet:
+A térkép egy sima statikus weboldal, ingyen futhat GitHub Pagesen, saját domain nélkül.
+
+1. A repó legyen **nyilvános** (Settings → General → Danger Zone → Change visibility). Privát repóból a Pages csak fizetős GitHub-csomaggal megy. Az adatok nyilvános OSM-adatok, a repóban nincs titkos dolog.
+2. **Settings → Pages → Source: Deploy from a branch → `main` / `(root)` → Save.**
+3. Pár perc múlva elérhető: `https://aloinarq.github.io/courier-mures-map/` – bárki megnyithatja, fiók nélkül.
+4. Telefonon telepíthető appként:
    - **iPhone (Safari):** Megosztás → *Főképernyőhöz adás*
-   - **Android (Chrome):** ⋮ menü → *Alkalmazás telepítése* / *Hozzáadás a kezdőképernyőhöz*
-5. Wi-Fi-n nyomd meg a **⤓** gombot: letölti a háttértérképet (13–16-os nagyítás az egész városra, 17–18 a beépített részekre). Ezután térerő nélkül is működik. A blokkok, számok és lépcsőházak adatai az első megnyitáskor maguktól elmentődnek.
+   - **Android (Chrome):** ⋮ menü → *Alkalmazás telepítése*
 
-Frissítés: `python3 fetch_data.py`, aztán `git add . && git commit -m "adatfrissítés" && git push`. A telefon a következő megnyitáskor (térerővel) behúzza az új adatokat.
+Frissítés: `python3 fetch_data.py`, aztán commit + push a `main`-re. A telefon a következő megnyitáskor behúzza az új adatokat.
 
-A „Helyzetem” gomb csak HTTPS-en (GitHub Pages) vagy localhoston működik, sima `http://192.168…` címen nem.
+## Helyzet és útvonal
+
+- Első megnyitáskor a térkép elmagyarázza, mire kell a helymeghatározás, és csak az **Engedélyezés** gombra kérdez rá a böngésző.
+- A kék pont a valós idejű helyzeted, a narancs legyező a haladási irány. A helyzet gomb: első koppintás követés, második kikapcsolja a követést. Ha elhúzod a térképet, a követés leáll.
+- Bármelyik épületnél **Navigálás**: útvonal autóval, biciklivel vagy gyalog, becsült idővel és érkezéssel. **Indulás** után kanyarról kanyarra vezet, ha letérsz, újratervez, a célnál szól. Egy lépcsőház/bejárat koppintásával egyenesen oda vezet.
+- Az útvonalat **a telefon számolja** a saját OSM-utcahálózatunkból (`route.js`): nincs szerver, nincs API-kulcs, offline is működik. Az egyirányú utcákat és körforgalmakat figyelembe veszi, a bekanyarodási tilalmakat nem – mindig a táblákat kövesd.
+- A helymeghatározás csak HTTPS-en (GitHub Pages) vagy localhoston működik.
+
+## Offline és háttértérkép
+
+- Az utcák, utcanevek, blokkok, házszámok, lépcsőházak és az útvonaltervezés **letöltés nélkül is működnek offline** (az első megnyitás után).
+- A **Háttértérkép** (Beállítások) az OpenStreetMap saját csempéit mutatja: ingyenes, kulcs nélküli, de internet kell hozzá, és a szabályzatuk tiltja a tömeges letöltést. Ezért csak a megnézett csempék mentődnek el.
 
 ## Nyelvek
 
-Az app angolul (alapértelmezett), magyarul és románul érhető el. A nyelvválasztó a térkép bal alsó sarkában van, és a telefon megjegyzi a választást.
+Az app angolul (alapértelmezett), magyarul és románul érhető el. A nyelv a Beállításokban (rétegek gomb) választható, és a telefon megjegyzi.
 
 A szövegek a `lang/` mappában vannak: `en.js`, `hu.js`, `ro.js`. Mindhárom fájlban ugyanazoknak a kulcsoknak kell lenniük; a `{n}`, `{msg}` stb. helyőrzőket az app tölti ki. Új nyelvhez másold le az `en.js`-t (pl. `de.js`), fordítsd le, és vedd fel az `index.html`-be és az `sw.js` listájába. A „Bl.”, „Sc.” és „nr.” rövidítés minden nyelven marad, mert így van kiírva a házakon.
 
@@ -82,9 +88,10 @@ A szövegek a `lang/` mappában vannak: `en.js`, `hu.js`, `ro.js`. Mindhárom f�
 
 - `fetch_data.py`: OSM-letöltés (Overpass API) és feldolgozás
 - `index.html`, `app.js`, `style.css`: a térkép
+- `route.js`: offline útvonaltervező (A* a saját utcahálózaton)
+- `lang/`: angol, magyar, román szövegek
 - `sw.js`, `manifest.webmanifest`: offline mód / telepíthető app
 - `vendor/leaflet/`: Leaflet 1.9.4 helyben, CDN nélkül
-- `data/blocks.geojson`, `data/entrances.geojson`, `data/stats.json`: generált adatok
+- `fonts/`: Google Sans (a Google Térkép betűtípusa, SIL OFL), helyben, hogy offline is meglegyen
+- `data/blocks.geojson`, `data/entrances.geojson`, `data/roads.geojson`, `data/context.geojson`, `data/stats.json`: generált adatok
 - `data/overrides.csv`: saját kiegészítések
-
-Háttértérkép: CARTO Light (OSM-alapú). A CARTO ingyenes csempéi kis, nem kereskedelmi forgalomra valók. Személyes használatra rendben van, nagy tömegű terjesztéshez saját csempeszolgáltató kell.

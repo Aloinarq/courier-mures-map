@@ -3,51 +3,71 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1d4ed8">
+<meta name="theme-color" content="#15387a">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Block map">
+<meta name="description" content="Free offline map of Târgu Mureș apartment blocks, house numbers and entrances, with live location and directions. OpenStreetMap data.">
 <title>Block map – Târgu Mureș</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preload" href="fonts/google-sans-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="map" role="application" aria-label="Map" data-i18n-attr="aria-label:ui.map"></div>
 
-<div id="topbar">
-  <div id="searchwrap">
-    <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false"
-           placeholder="Search: street, number, “bl 12”…" aria-label="Search"
+<header id="topbar">
+  <div class="plate search-plate">
+    <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+    <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search"
+           placeholder="Street and number, e.g. “carpati 31”" aria-label="Search"
            data-i18n-attr="placeholder:ui.searchPlaceholder;aria-label:ui.search">
-    <button id="qclear" aria-label="Clear" data-i18n-attr="aria-label:ui.clear" hidden>×</button>
+    <button id="qclear" class="icon-btn" aria-label="Clear" data-i18n-attr="aria-label:ui.clear" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
   </div>
   <ul id="results" hidden></ul>
+</header>
+
+<div id="navbar" hidden>
+  <div class="plate nav-plate">
+    <div class="nav-arrow" id="nav-arrow" aria-hidden="true"></div>
+    <div class="nav-text">
+      <div class="nav-dist" id="nav-dist"></div>
+      <div class="nav-verb" id="nav-verb"></div>
+      <div class="nav-street" id="nav-street"></div>
+    </div>
+  </div>
+  <div class="nav-then" id="nav-then" hidden></div>
 </div>
 
 <div id="fabs">
-  <button id="btn-info" class="fab" aria-label="Information" title="Information" data-i18n-attr="aria-label:ui.info;title:ui.info">i</button>
-  <button id="btn-offline" class="fab" aria-label="Offline download" title="Download the map for offline use" data-i18n-attr="aria-label:ui.offline;title:ui.offlineTitle">⤓</button>
-  <button id="btn-locate" class="fab primary" aria-label="My location" title="My location" data-i18n-attr="aria-label:ui.locate;title:ui.locate">
-    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+  <button id="btn-settings" class="fab" aria-label="Settings" title="Settings" data-i18n-attr="aria-label:ui.settings;title:ui.settings">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 8 12 13l9.5-5L12 3Z"/><path d="m2.5 12.5 9.5 5 9.5-5"/><path d="m2.5 16.5 9.5 5 9.5-5"/></svg>
+  </button>
+  <button id="btn-locate" class="fab locate" aria-label="My location" title="My location" data-i18n-attr="aria-label:ui.locate;title:ui.locate">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path class="loc-arrow" d="M20.5 3.5 3.5 10.6l7.3 2.6 2.6 7.3 7.1-17Z"/></svg>
   </button>
 </div>
 
-<div id="toast" hidden></div>
+<section id="sheet" class="sheet" hidden aria-live="polite">
+  <button class="sheet-close icon-btn" aria-label="Close" data-i18n-attr="aria-label:ui.close">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+  </button>
+  <div class="grip" aria-hidden="true"></div>
+  <div id="sheet-body"></div>
+</section>
 
-<div id="sheet" hidden>
-  <div class="sheet-card">
-    <button class="sheet-close" aria-label="Close" data-i18n-attr="aria-label:ui.close">×</button>
-    <div id="sheet-body"></div>
-  </div>
-</div>
+<div id="toast" role="status" hidden></div>
 
 <script src="vendor/leaflet/leaflet.js"></script>
 <script src="lang/en.js"></script>
 <script src="lang/hu.js"></script>
 <script src="lang/ro.js"></script>
+<script src="route.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

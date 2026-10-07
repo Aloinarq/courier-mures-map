@@ -677,12 +677,14 @@ def path_length_m(pts):
     return sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
 
 
-def simplify_xy(pts, tol):
-    """Douglas-Peucker on [(x, y), ...] (metres); keeps the end points."""
+def simplify_xy(pts, tol, fixed=()):
+    """Douglas-Peucker on [(x, y), ...] (metres); keeps the end points and every index in `fixed`
+    (road junctions: dropping one would disconnect the routing graph)."""
     if len(pts) < 3:
         return list(range(len(pts)))
-    keep = {0, len(pts) - 1}
-    stack = [(0, len(pts) - 1)]
+    anchors = sorted({0, len(pts) - 1, *fixed})
+    keep = set(anchors)
+    stack = list(zip(anchors, anchors[1:]))
     while stack:
         a, b = stack.pop()
         best, idx = -1.0, None
@@ -697,13 +699,20 @@ def simplify_xy(pts, tol):
     return sorted(keep)
 
 
-def simplified_lonlat(latlon, tol, digits):
+def simplified_lonlat(latlon, tol, digits, fixed=()):
     pts = [xy(la, lo) for la, lo in latlon]
-    return [[round(latlon[i][1], digits), round(latlon[i][0], digits)] for i in simplify_xy(pts, tol)]
+    return [[round(latlon[i][1], digits), round(latlon[i][0], digits)] for i in simplify_xy(pts, tol, fixed)]
 
 
 def process_roads(raw):
     feats, dropped = [], Counter()
+    # a vertex used by two or more ways (or twice by one way) is a junction the router needs
+    uses = Counter()
+    for e in raw.get("elements", []):
+        if e["type"] == "way" and e.get("tags", {}).get("highway"):
+            for p in e.get("geometry", []):
+                if p:
+                    uses[(p["lat"], p["lon"])] += 1
     for e in raw.get("elements", []):
         t = e.get("tags", {})
         h = t.get("highway")
@@ -718,11 +727,13 @@ def process_roads(raw):
         if h in MINOR_UNNAMED and not named and path_length_m(pts) < MIN_FOOTWAY_M:
             dropped["short unnamed footway"] += 1
             continue
-        coords = simplified_lonlat(g, ROAD_SIMPLIFY_M, 6)
+        junctions = [i for i, c in enumerate(g) if uses[c] > 1]
+        coords = simplified_lonlat(g, ROAD_SIMPLIFY_M, 6, junctions)
         props = {"h": h}
         for k, v in (("n", t.get("name")), ("r", t.get("ref")), ("o", t.get("oneway")),
-                     ("s", t.get("service")), ("a", t.get("access"))):
-            if v and v not in ("no",) :
+                     ("s", t.get("service")), ("a", t.get("access")), ("j", t.get("junction")),
+                     ("v", t.get("motor_vehicle") or t.get("vehicle")), ("b", t.get("bicycle"))):
+            if v and not (k == "o" and v == "no"):
                 props[k] = v
         feats.append({"type": "Feature", "geometry": {"type": "LineString", "coordinates": coords}, "properties": props})
     return feats, dropped
