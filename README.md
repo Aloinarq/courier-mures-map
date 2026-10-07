@@ -77,6 +77,7 @@ Frissítés: `python3 fetch_data.py`, aztán commit + push a `main`-re. A telefo
 ## Offline és háttértérkép
 
 - Az utcák, utcanevek, blokkok, házszámok, lépcsőházak és az útvonaltervezés **letöltés nélkül is működnek offline** (az első megnyitás után).
+- Az app a mentett példányból indul azonnal (gyenge térerő sem lassítja), és közben a háttérben frissít: egy adatfrissítés a **következő megnyitáskor** látszik.
 - A **Háttértérkép** (Beállítások) az OpenStreetMap saját csempéit mutatja: ingyenes, kulcs nélküli, de internet kell hozzá, és a szabályzatuk tiltja a tömeges letöltést. Ezért csak a megnézett csempék mentődnek el.
 
 ## Élő forgalom (TomTom)
@@ -100,10 +101,10 @@ A szövegek a `lang/` mappában vannak: `en.js`, `hu.js`, `ro.js`. Mindhárom f�
 ## Fájlok
 
 - `fetch_data.py`: OSM-letöltés (Overpass API) és feldolgozás
-- `index.html`, `app.js`, `style.css`: a térkép
+- `index.html`, `app.js`, `style.css`: a térkép (az utcák, épületek és feliratok vásznon/canvas rajzolódnak, nem több ezer külön elemként)
 - `config.js`: a TomTom forgalmi kulcs helye (élő forgalom)
 - `data/pois.geojson`: névvel kereshető helyek (boltok, éttermek, gyógyszertárak, iskolák…), OSM-ből
-- `route.js`: offline útvonaltervező (A* a saját utcahálózaton)
+- `route.js`: offline útvonaltervező (A* a saját utcahálózaton); `route-worker.js` a háttérben futtatja, hogy a térkép ne akadjon meg
 - `lang/`: angol, magyar, román szövegek
 - `sw.js`, `manifest.webmanifest`: offline mód / telepíthető app
 - `vendor/leaflet/`: Leaflet 1.9.4 helyben, CDN nélkül

@@ -144,10 +144,11 @@
     zoomControl: true, preferCanvas: true,
     maxBounds: CITY_BOUNDS.pad(0.6), maxBoundsViscosity: 0.8,
   });
-  var canvas = L.canvas({ padding: 0.4, tolerance: 6 });
   // heading-up while navigating: the map element is turned with CSS around the user's position.
   // rot.on = turned; rot.shown = the angle the map is turned by (deg, unwrapped); labels counter-rotate by it.
+  var appReady = false;
   var rot = { on: false, shown: 0, pivot: null, D: 0 };
+  var ui = { topBottom: 70, navBottom: 0, sheetH: 0 };  // see measureUi
   function rotBox(cx, cy, w, h) {  // container-space box of a label that is upright on screen
     if (!rot.on) return [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2];
     var r = rot.shown * Math.PI / 180, c = Math.abs(Math.cos(r)), sn = Math.abs(Math.sin(r));
@@ -159,19 +160,101 @@
     var r = -rot.shown * Math.PI / 180, dx = p.x - rot.D / 2, dy = p.y - rot.D / 2;
     return L.point(rot.pivot.x + dx * Math.cos(r) - dy * Math.sin(r), rot.pivot.y + dx * Math.sin(r) + dy * Math.cos(r));
   }
-  // our own street map sits between the (optional) tiles and the buildings
+  // ---------- our own drawing: two canvases for the street map and the buildings, one for all labels.
+  // L.Canvas still positions them, scales them for sharp screens and runs the zoom animation; the
+  // per-shape Leaflet objects (25,000 of them, re-clipped after every move) are gone: we draw in batches
+  // straight from typed arrays and skip redrawing while what's on screen is still covered.
+  var DataCanvas = L.Canvas.extend({
+    initialize: function (options) {
+      L.Canvas.prototype.initialize.call(this, options);
+      this._drawFn = options.draw;
+      this._lazy = options.lazy !== false;
+      this._basePad = options.padding;
+    },
+    _update: function () {
+      if (this._map._animatingZoom && this._bounds) return;
+      var m = this._map, z = m.getZoom();
+      if (this._lazy && !this._force && this._bounds && this._drawnZoom === z && this._origin && this._origin.equals(m.getPixelOrigin())) {
+        var a = m.containerPointToLayerPoint([0, 0]), b = m.containerPointToLayerPoint(m.getSize());
+        if (this._bounds.contains(a) && this._bounds.contains(b)) return;  // the pane only moved
+      }
+      this._force = false;
+      this._drawnZoom = z;
+      this._origin = m.getPixelOrigin();
+      L.Canvas.prototype._update.call(this);
+      if (this._drawFn && appReady) this._drawFn(this._ctx, this._bounds);
+    },
+    redraw: function () { if (this._map) { this._force = true; this._update(); } return this; },
+    _updatePaths: function () {},  // no Leaflet shapes here; Leaflet's version would wipe our drawing after a view reset
+  });
   map.createPane("context").style.zIndex = 320;
   map.createPane("roads").style.zIndex = 350;
-  map.createPane("streetLabels").style.zIndex = 590;  // under block labels (markerPane 600)
-  map.getPane("streetLabels").style.pointerEvents = "none";
-  var ctxCanvas = L.canvas({ pane: "context", padding: 0.4 });
-  var roadCanvas = L.canvas({ pane: "roads", padding: 0.4 });
+  map.createPane("labels").style.zIndex = 580;  // over the route (450), under the dot and the destination pin (600)
+  ["context", "roads", "labels"].forEach(function (n) { map.getPane(n).style.pointerEvents = "none"; });
   map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
   map.attributionControl.addAttribution(OSM_ATTRIB);
 
   map.createPane("route").style.zIndex = 450;   // above the buildings, under all labels
   map.getPane("route").style.pointerEvents = "none";
   var routeCanvas = L.canvas({ pane: "route", padding: 0.5 });
+
+  // normalised Web Mercator (0..1): pixel = m * 256 * 2^zoom at any zoom, so nothing is re-projected per zoom
+  function mx(lon) { return (lon + 180) / 360; }
+  function my(lat) { var s = Math.sin(lat * Math.PI / 180); return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); }
+  function xLon(x) { return x * 360 - 180; }
+  function yLat(y) { return 360 / Math.PI * Math.atan(Math.exp((0.5 - y) * 2 * Math.PI)) - 90; }
+  var CELL = 1 / 32768;  // spatial grid cell (~850 m here)
+  function Grid() { this.cells = {}; this.items = []; this.stamp = 0; }
+  Grid.prototype.add = function (item) {  // item.bb = [x0, y0, x1, y1] in normalised units
+    var i = this.items.push(item) - 1, bb = item.bb;
+    for (var cx = Math.floor(bb[0] / CELL); cx <= Math.floor(bb[2] / CELL); cx++)
+      for (var cy = Math.floor(bb[1] / CELL); cy <= Math.floor(bb[3] / CELL); cy++)
+        (this.cells[cx + ":" + cy] = this.cells[cx + ":" + cy] || []).push(i);
+  };
+  Grid.prototype.query = function (x0, y0, x1, y1) {
+    var out = [], st = ++this.stamp, items = this.items;
+    for (var cx = Math.floor(x0 / CELL); cx <= Math.floor(x1 / CELL); cx++)
+      for (var cy = Math.floor(y0 / CELL); cy <= Math.floor(y1 / CELL); cy++) {
+        var list = this.cells[cx + ":" + cy];
+        if (!list) continue;
+        for (var k = 0; k < list.length; k++) {
+          var it = items[list[k]];
+          if (it._st === st) continue;
+          it._st = st;
+          var bb = it.bb;
+          if (bb[2] >= x0 && bb[0] <= x1 && bb[3] >= y0 && bb[1] <= y1) out.push(it);
+        }
+      }
+    return out;
+  };
+  function normRing(coords) {  // [[lon, lat], ...] -> Float64Array + bbox
+    var a = new Float64Array(coords.length * 2), bb = [1, 1, 0, 0];
+    for (var i = 0; i < coords.length; i++) {
+      var x = mx(coords[i][0]), y = my(coords[i][1]);
+      a[2 * i] = x; a[2 * i + 1] = y;
+      if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y; if (x > bb[2]) bb[2] = x; if (y > bb[3]) bb[3] = y;
+    }
+    return { a: a, bb: bb };
+  }
+  function mergeBB(a, b) { return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])]; }
+  var geo = { ctx: new Grid(), roads: new Grid(), bld: new Grid(), dots: new Grid(), lbl: new Grid(), ent: new Grid(), poi: new Grid() };
+  // what the canvas covers, in normalised units, and the transform from normalised units to its layer points
+  function drawView(b) {
+    var z = map.getZoom(), S = 256 * Math.pow(2, z), o = map.getPixelOrigin();
+    return { z: z, S: S, ox: o.x, oy: o.y, x0: (b.min.x + o.x) / S, y0: (b.min.y + o.y) / S, x1: (b.max.x + o.x) / S, y1: (b.max.y + o.y) / S };
+  }
+  function tracePath(ctx, a, v, close) {  // skips vertices closer than ~0.7 px to the last drawn one
+    var x = a[0] * v.S - v.ox, y = a[1] * v.S - v.oy, lx = x, ly = y, n = a.length;
+    ctx.moveTo(x, y);
+    for (var i = 2; i < n; i += 2) {
+      x = a[i] * v.S - v.ox; y = a[i + 1] * v.S - v.oy;
+      if (i === n - 2 || Math.abs(x - lx) + Math.abs(y - ly) > 0.7) { ctx.lineTo(x, y); lx = x; ly = y; }
+    }
+    if (close) ctx.closePath();
+  }
+  var baseLayer = new DataCanvas({ pane: "roads", padding: 0.5, draw: function (ctx, b) { drawBase(ctx, b); } }).addTo(map);
+  var bldLayer = new DataCanvas({ pane: "overlayPane", padding: 0.5, draw: function (ctx, b) { drawBuildings(ctx, b); } }).addTo(map);
+  var labelsLayer = new DataCanvas({ pane: "labels", padding: 0.15, lazy: false, draw: function (ctx, b) { drawLabels(ctx, b); } }).addTo(map);
 
   // ---------- optional background tiles
   var tiles = L.tileLayer(TILE_URL, { maxZoom: 19, maxNativeZoom: 19, crossOrigin: true });
@@ -229,20 +312,10 @@
     if (nav.active) updateNav();
   }
 
-  var blocksLayer, addrLayer, extraLayer = L.layerGroup().addTo(map);
-  var labelLayer = L.layerGroup().addTo(map);
-  var stairLayer = L.layerGroup().addTo(map);
-  var streetLabelLayer = L.layerGroup().addTo(map);
-  var roadGroups = [], roadsByName = {}, roadChains = [], streetHl = null, streetIndex = [], streetStats = null;
+  var roadsByName = {}, roadChains = [], streetHl = null, streetIndex = [], streetStats = null;
   var blocks = [], byId = {}, entrances = [], searchIndex = [], stats = null, overrideCount = 0, pois = [], poiIndex = [];
-  var poiLayer = L.layerGroup().addTo(map);
-
-  var STYLE = {
-    apartments: { renderer: canvas, color: "#1d4ed8", weight: 1.2, fillColor: "#3b82f6", fillOpacity: 0.38 },
-    other: { renderer: canvas, color: "#6b7280", weight: 1, fillColor: "#9ca3af", fillOpacity: 0.35 },
-    apartmentsOvr: { renderer: canvas, color: "#6d28d9", weight: 1.6, fillColor: "#3b82f6", fillOpacity: 0.38 },
-  };
-  var HL = { color: "#f97316", weight: 4, fillOpacity: 0.5 };
+  // [fill, fill opacity, outline, outline width] per building kind
+  var BLD_STYLE = { other: ["#9ca3af", 0.35, "#6b7280", 1], apartments: ["#3b82f6", 0.38, "#1d4ed8", 1.2], ovr: ["#3b82f6", 0.38, "#6d28d9", 1.6] };
 
   // ------------------------------------------------------------------ data
   Promise.all([
@@ -263,9 +336,14 @@
 
   Promise.all([
     fetchJSON("data/context.geojson").catch(function (e) { console.warn(e.message); return null; }),
-    fetchJSON("data/roads.geojson"),
+    fetch("data/roads.geojson", { cache: "no-cache" }).then(function (r) {
+      if (!r.ok) throw new Error("data/roads.geojson: HTTP " + r.status);
+      return r.arrayBuffer();
+    }),
   ]).then(function (res) {
-    buildStreetMap(res[0], res[1]);
+    var rgj = JSON.parse(new TextDecoder().decode(res[1]));
+    startRouter(res[1], rgj);  // hands the raw file to the routing worker
+    buildStreetMap(res[0], rgj);
   }).catch(function (e) {
     console.error(e);
     toast(t("toast.roadsFail", { msg: e.message }), 8000);
@@ -287,23 +365,20 @@
     foot: { minZ: 17, fill: "#c4a98f", w: 1.0, dash: "2 3" },  // ~5,000 sidewalks: clutter + 40% of redraw cost at z16
   };
   function widthAt(base, z) { return Math.max(0.6, base * Math.pow(1.45, z - 16)); }
+  var roadsLoaded = false;
   function buildStreetMap(cgj, rgj) {
-    if (cgj) {
-      L.geoJSON(cgj, {
-        renderer: ctxCanvas, interactive: false,
-        style: function (f) {
-          var k = f.properties.k;
-          if (k === "water") return { renderer: ctxCanvas, stroke: false, fillColor: "#a9cdee", fillOpacity: 1 };
-          if (k === "park") return { renderer: ctxCanvas, stroke: false, fillColor: "#d6ebc8", fillOpacity: 1 };
-          if (k === "river") return { renderer: ctxCanvas, color: "#8bbbe6", weight: 6, opacity: 1 };
-          return { renderer: ctxCanvas, color: "#4b5563", weight: 1.6, dashArray: "7 5", opacity: 0.85 };
-        },
-      }).addTo(map);
-    }
-    var byCls = {};
+    if (cgj) cgj.features.forEach(function (f) {
+      var k = f.properties.k, g = f.geometry;
+      if (g.type === "Polygon") {
+        var rings = g.coordinates.map(normRing);
+        geo.ctx.add({ k: k, poly: true, rings: rings.map(function (r) { return r.a; }), bb: rings.reduce(function (m, r) { return mergeBB(m, r.bb); }, rings[0].bb) });
+      } else if (g.type === "LineString") {
+        var r = normRing(g.coordinates);
+        geo.ctx.add({ k: k, poly: false, a: r.a, bb: r.bb });
+      }
+    });
     rgj.features.forEach(function (f) {
       var cls = ROAD_CLASS[f.properties.h] || "minor";
-      (byCls[cls] = byCls[cls] || []).push(f);
       var c = f.geometry.coordinates, s = 90, w = 180, n = -90, e = -180;
       for (var i = 0; i < c.length; i++) {
         if (c[i][1] < s) s = c[i][1]; if (c[i][1] > n) n = c[i][1];
@@ -311,27 +386,50 @@
       }
       f._bb = [s, w, n, e];
       f._cls = cls;
+      var r = normRing(c);
+      geo.roads.add({ cls: cls, a: r.a, bb: r.bb });
       var nm = f.properties.n;
       if (nm) (roadsByName[nm] = roadsByName[nm] || []).push(f);
     });
     buildChains();
-    // draw order: minor/foot under, then casings of all wide roads, then their fills
-    ["foot", "minor"].forEach(function (cls) {
-      if (!byCls[cls]) return;
-      roadGroups.push({ cls: cls, part: "fill", layer: L.geoJSON(byCls[cls], { renderer: roadCanvas, interactive: false }) });
-    });
-    ["ped", "mid", "major"].forEach(function (cls) {
-      if (byCls[cls]) roadGroups.push({ cls: cls, part: "casing", layer: L.geoJSON(byCls[cls], { renderer: roadCanvas, interactive: false }) });
-    });
-    ["ped", "mid", "major"].forEach(function (cls) {
-      if (byCls[cls]) roadGroups.push({ cls: cls, part: "fill", layer: L.geoJSON(byCls[cls], { renderer: roadCanvas, interactive: false }) });
-    });
-    styleRoads();
-    map.on("zoomend", styleRoads);
+    roadsLoaded = true;
+    baseLayer.redraw();
     addStreetsToSearch();
     renderLabels();
-    routerData = rgj;  // the routing graph is built from the same roads, off the critical path
-    setTimeout(getRouter, 1200);
+  }
+  var ROAD_PASSES = [["foot", "fill"], ["minor", "fill"], ["ped", "casing"], ["mid", "casing"], ["major", "casing"],
+    ["ped", "fill"], ["mid", "fill"], ["major", "fill"]];
+  function drawBase(ctx, b) {
+    if (!roadsLoaded) return;
+    var v = drawView(b), z = v.z;
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    // water and parks, then the river and railways
+    var cx = geo.ctx.query(v.x0, v.y0, v.x1, v.y1);
+    [["water", "#a9cdee"], ["park", "#d6ebc8"]].forEach(function (pair) {
+      ctx.beginPath();
+      cx.forEach(function (it) { if (it.k === pair[0] && it.poly) it.rings.forEach(function (r) { tracePath(ctx, r, v, true); }); });
+      ctx.fillStyle = pair[1]; ctx.fill("evenodd");
+    });
+    ctx.beginPath();
+    cx.forEach(function (it) { if (it.k === "river" && !it.poly) tracePath(ctx, it.a, v, false); });
+    ctx.strokeStyle = "#8bbbe6"; ctx.lineWidth = 6; ctx.stroke();
+    ctx.beginPath();
+    cx.forEach(function (it) { if (it.k === "rail" && !it.poly) tracePath(ctx, it.a, v, false); });
+    ctx.save(); ctx.setLineDash([7, 5]); ctx.globalAlpha = 0.85; ctx.strokeStyle = "#4b5563"; ctx.lineWidth = 1.6; ctx.stroke(); ctx.restore();
+    // roads: one path per class and pass (casing under fill), so a few thousand streets cost a handful of strokes
+    var rs = geo.roads.query(v.x0, v.y0, v.x1, v.y1), byCls = {};
+    rs.forEach(function (it) { (byCls[it.cls] = byCls[it.cls] || []).push(it); });
+    ROAD_PASSES.forEach(function (pass) {
+      var cls = pass[0], st = ROAD_STYLE[cls], list = byCls[cls];
+      if (!list || z < st.minZ || (pass[1] === "casing" && !st.casing)) return;
+      var w = widthAt(st.w, z);
+      ctx.beginPath();
+      for (var i = 0; i < list.length; i++) tracePath(ctx, list[i].a, v, false);
+      if (pass[1] === "casing") { ctx.setLineDash([]); ctx.lineCap = "round"; ctx.strokeStyle = st.casing; ctx.lineWidth = w + (z >= 15 ? 2.5 : 1.5); }
+      else { ctx.setLineDash(st.dash ? st.dash.split(" ").map(Number) : []); ctx.lineCap = st.dash ? "butt" : "round"; ctx.strokeStyle = st.fill; ctx.lineWidth = w; }
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
   }
   // OSM splits one street into many short ways; join same-name pieces that touch end to end,
   // so a label sees the whole visible stretch instead of 30 m fragments
@@ -356,36 +454,30 @@
               segs.splice(i, 1); grown = true; break;
             }
           }
-          var bb = [90, 180, -90, -180];
-          cur.forEach(function (c) {
-            bb[0] = Math.min(bb[0], c[1]); bb[1] = Math.min(bb[1], c[0]); bb[2] = Math.max(bb[2], c[1]); bb[3] = Math.max(bb[3], c[0]);
-          });
-          roadChains.push({ name: name, major: major, coords: cur, bb: bb });
+          var r = normRing(cur);
+          roadChains.push({ name: name, major: major, n: r.a, nb: r.bb });
         }
       });
     });
   }
-  var styledZoom = null;
-  function styleRoads() {
-    var z = map.getZoom();
-    if (z === styledZoom) return;
-    styledZoom = z;
-    roadGroups.forEach(function (g) {
-      var st = ROAD_STYLE[g.cls], on = z >= st.minZ;
-      if (!on) { if (map.hasLayer(g.layer)) map.removeLayer(g.layer); return; }
-      var w = widthAt(st.w, z);
-      if (g.part === "casing") g.layer.setStyle({ color: st.casing, weight: w + (z >= 15 ? 2.5 : 1.5), opacity: 1, lineCap: "round", lineJoin: "round" });
-      else g.layer.setStyle({ color: st.fill, weight: w, opacity: 1, dashArray: st.dash || null, lineCap: st.dash ? "butt" : "round", lineJoin: "round" });
-      if (!map.hasLayer(g.layer)) g.layer.addTo(map);
-    });
-  }
 
-  // ---------- street name labels
+  // ---------- labels: all of them on one canvas, redrawn after every move. A few hundred texts cost a few
+  // milliseconds; the DOM markers they replace (with text shadows, re-rotated for every heading change)
+  // cost the browser a full style and layout pass each time.
   var measureCtx = document.createElement("canvas").getContext("2d");
-  var STREET_FONT = '500 12px "Google Sans", Roboto, system-ui, sans-serif';
-  function textW(s) { measureCtx.font = STREET_FONT; return measureCtx.measureText(s).width; }
-  function textD(s, px) { measureCtx.font = "700 " + px + 'px "Google Sans", Roboto, system-ui, sans-serif'; return measureCtx.measureText(s).width; }
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (blocks.length) renderLabels(); });
+  var FONT_FAMILY = '"Google Sans", Roboto, system-ui, sans-serif';
+  var STREET_FONT = "500 12px " + FONT_FAMILY, PILL_FONT = "700 11.5px " + FONT_FAMILY;
+  var widthCache = {};
+  function textWidth(font, s) {
+    var k = font + "|" + s, w = widthCache[k];
+    if (w === undefined) { measureCtx.font = font; w = widthCache[k] = measureCtx.measureText(s).width; }
+    return w;
+  }
+  function textW(s) { return textWidth(STREET_FONT, s); }
+  function fontsChanged() { widthCache = {}; renderLabels(); }
+  if (document.fonts && document.fonts.load) {
+    Promise.all(["700 13px ", "500 12px "].map(function (f) { return document.fonts.load(f + FONT_FAMILY); })).then(fontsChanged, function () {});
+  }
   function shortName(n) {
     return n.replace(/^Strada /, "Str. ").replace(/^Bulevardul /, "B-dul ").replace(/^Aleea /, "Al. ")
       .replace(/^Piața /, "P-ța ").replace(/^Pasajul /, "Pas. ");
@@ -397,32 +489,52 @@
     }
     return false;
   }
-  function renderStreetLabels(boxes) {
-    streetLabelLayer.clearLayers();
-    var z = map.getZoom();
-    if (z < 15 || !roadGroups.length) return;
-    var vb = map.getBounds(), size = map.getSize();
-    var vtop = 90, vbottom = size.y - 30, vw = size.x;
-    if (rot.on) { vtop = $("navbar").getBoundingClientRect().bottom + 8; vbottom = window.innerHeight - sheetEl.offsetHeight - 10; vw = window.innerWidth; }
+  // container point of a normalised point: x * S + dx; layer point: container point + (tlx, tly)
+  function labelView() {
+    var z = map.getZoom(), S = 256 * Math.pow(2, z), o = map.getPixelOrigin(), tl = map.containerPointToLayerPoint([0, 0]);
+    return { z: z, S: S, dx: -o.x - tl.x, dy: -o.y - tl.y, tlx: tl.x, tly: tl.y, size: map.getSize() };
+  }
+  function queryView(grid, V, pad) {
+    var px = V.size.x * pad, py = V.size.y * pad;
+    return grid.query((-px - V.dx) / V.S, (-py - V.dy) / V.S, (V.size.x + px - V.dx) / V.S, (V.size.y + py - V.dy) / V.S);
+  }
+  function placeItems(list, V) {
+    for (var i = 0; i < list.length; i++) { list[i].cx = list[i].x * V.S + V.dx; list[i].cy = list[i].y * V.S + V.dy; }
+    return list;
+  }
+  function nearestFirst(list, V, extra, max) {  // keep those closest to the centre (after `extra`, a rank)
+    if (list.length <= max) return list;
+    var cx = V.size.x / 2, cy = V.size.y / 2;
+    list.forEach(function (it) { it.k = extra(it) + (it.cx - cx) * (it.cx - cx) + (it.cy - cy) * (it.cy - cy); });
+    list.sort(function (a, b) { return a.k - b.k; });
+    list.length = max;
+    return list;
+  }
+  function collectStreetLabels(V, boxes, out) {
+    var z = V.z;
+    if (z < 15 || !roadChains.length) return;
+    var size = V.size, vtop = 90, vbottom = size.y - 30, vw = size.x;
+    if (rot.on) { vtop = ui.navBottom + 8; vbottom = window.innerHeight - ui.sheetH - 10; vw = window.innerWidth; }
     function inView(p) {
       var v = toScreen(p);
       return v.x > 20 && v.y > vtop && v.x < vw - (rot.on ? 84 : 20) && v.y < vbottom;
     }
+    var x0 = -V.dx / V.S, y0 = -V.dy / V.S, x1 = (size.x - V.dx) / V.S, y1 = (size.y - V.dy) / V.S;
     var byName = {};
     roadChains.forEach(function (ch) {
       if (z < 16 && !ch.major) return;
-      var bb = ch.bb;
-      if (bb[2] < vb.getSouth() || bb[0] > vb.getNorth() || bb[3] < vb.getWest() || bb[1] > vb.getEast()) return;
+      var nb = ch.nb;
+      if (nb[2] < x0 || nb[0] > x1 || nb[3] < y0 || nb[1] > y1) return;
       // on-screen polyline in pixels, split where it leaves the viewport (minus search bar / edges)
-      var c = ch.coords, pts = [], list = byName[ch.name] = byName[ch.name] || [];
+      var a = ch.n, pts = [], list = byName[ch.name] = byName[ch.name] || [];
       var flush = function () {
         var len = 0;
         for (var k = 1; k < pts.length; k++) len += pts[k].distanceTo(pts[k - 1]);
         if (len > 0) list.push({ pts: pts, len: len, major: ch.major });
         pts = [];
       };
-      for (var i = 0; i < c.length; i++) {
-        var p = map.latLngToContainerPoint([c[i][1], c[i][0]]);
+      for (var i = 0; i < a.length; i += 2) {
+        var p = L.point(a[i] * V.S + V.dx, a[i + 1] * V.S + V.dy);
         if (inView(p)) pts.push(p);
         else if (pts.length) flush();
       }
@@ -458,19 +570,14 @@
       }
       if (!spot) { streetStats.collided++; continue; }
       taken.push(spot.box); n++; streetStats.placed++;
-      var a = spot.at.angle, p = spot.at.p;
+      var ang = spot.at.angle;
       if (rot.on) {  // keep the text upright on the turned screen
-        var B = rot.shown * Math.PI / 180, sa = a - B;
-        sa = Math.atan2(Math.sin(sa), Math.cos(sa));
-        if (sa > Math.PI / 2) sa -= Math.PI; else if (sa < -Math.PI / 2) sa += Math.PI;
-        a = sa + B;
+        var B = rot.shown * Math.PI / 180, sr = ang - B;
+        sr = Math.atan2(Math.sin(sr), Math.cos(sr));
+        if (sr > Math.PI / 2) sr -= Math.PI; else if (sr < -Math.PI / 2) sr += Math.PI;
+        ang = sr + B;
       }
-      var deg = a * 180 / Math.PI;
-      streetLabelLayer.addLayer(L.marker(map.containerPointToLatLng(p), {
-        pane: "streetLabels", interactive: false, keyboard: false,
-        icon: L.divIcon({ className: "slbl" + (cd.major ? " major" : ""), iconSize: [0, 0],
-          html: '<span style="transform:translate(-50%,-50%) rotate(' + deg.toFixed(1) + 'deg)">' + esc(label) + "</span>" }),
-      }));
+      out.push({ x: spot.at.p.x, y: spot.at.p.y, a: ang, text: label, color: cd.major ? "#3f3a36" : "#57534e" });
     }
   }
   var LABEL_SPOTS = [0.5, 0.3, 0.7, 0.15, 0.85];
@@ -502,20 +609,22 @@
   function showStreet(f) {
     if (streetHl) map.removeLayer(streetHl);
     streetHl = L.geoJSON({ type: "FeatureCollection", features: f._ways }, {
-      renderer: roadCanvas, interactive: false, style: { color: "#f97316", weight: 7, opacity: 0.55, lineCap: "round" },
+      renderer: routeCanvas, interactive: false, style: { color: "#f97316", weight: 7, opacity: 0.55, lineCap: "round" },
     }).addTo(map);
     map.fitBounds(f._bounds, { maxZoom: 17, padding: [50, 50] });
     setTimeout(function () { if (streetHl) { map.removeLayer(streetHl); streetHl = null; } }, 6000);
   }
 
+  var bldLoaded = false;
+  function ptItem(f, lat, lon, extra) {
+    var x = mx(lon), y = my(lat), it = { f: f, x: x, y: y, bb: [x, y, x, y] };
+    for (var k in extra) it[k] = extra[k];
+    return it;
+  }
   function build(bgj, egj, overrides) {
     bgj.features.forEach(function (f) {
       var p = f.properties;
       p._ents = [];
-      if (f.geometry.type !== "Point") {
-        var b = L.geoJSON(f).getBounds();
-        p._bb = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
-      }
       blocks.push(f); byId[p.id] = f;
     });
     entrances = egj.features;
@@ -532,50 +641,67 @@
       f.properties.entrances = Object.keys(ls).sort(function (a, b) { return a.length - b.length || a.localeCompare(b, "ro", { numeric: true }); });
     });
 
-    var polyFeats = blocks.filter(function (f) { return f.geometry.type !== "Point"; });
-    // draw other buildings first so blue blocks are on top
-    polyFeats.sort(function (a, b) { return (a.properties.kind === "apartments") - (b.properties.kind === "apartments"); });
-    blocksLayer = L.geoJSON({ type: "FeatureCollection", features: polyFeats }, {
-      bubblingMouseEvents: false,
-      style: function (f) {
-        var p = f.properties;
-        if (p.kind === "apartments") return p.override ? STYLE.apartmentsOvr : STYLE.apartments;
-        return STYLE.other;
-      },
-      onEachFeature: function (f, layer) { f._layer = layer; layer.on("click", function (ev) { openPlace(f); }); },
-    }).addTo(map);
-
-    addrLayer = L.layerGroup();
+    // everything the canvases draw, in normalised units and a spatial grid
+    var nPoly = 0;
     blocks.forEach(function (f) {
-      if (f.geometry.type !== "Point") return;
-      var c = f.geometry.coordinates;
-      var ovr = f.properties.kind === "override";
-      var m = L.circleMarker([c[1], c[0]], {
-        bubblingMouseEvents: false,
-        renderer: canvas, radius: ovr ? 6 : 4, weight: 1.5,
-        color: ovr ? "#6d28d9" : "#4b5563", fillColor: ovr ? "#a78bfa" : "#d1d5db", fillOpacity: 0.9,
-      });
-      f._layer = m;
-      m.on("click", function () { openPlace(f); });
-      addrLayer.addLayer(m);
+      var p = f.properties, g = f.geometry;
+      if (g.type === "Point") {
+        geo.dots.add(ptItem(f, g.coordinates[1], g.coordinates[0], { ovr: p.kind === "override" }));
+      } else {
+        var rings = [], bb = null;
+        polys(g).forEach(function (pg) { pg.forEach(function (r) { var n = normRing(r); rings.push(n.a); bb = bb ? mergeBB(bb, n.bb) : n.bb; }); });
+        if (!rings.length) return;
+        // the same box in degrees (south, west, north, east) for the override matching
+        p._bb = [yLat(bb[3]), xLon(bb[0]), yLat(bb[1]), xLon(bb[2])];
+        geo.bld.add({ f: f, rings: rings, bb: bb, cls: p.kind === "apartments" ? (p.override ? "ovr" : "apartments") : "other" });
+        nPoly++;
+      }
+      if (p.label && p.lp) geo.lbl.add(ptItem(f, p.lp[0], p.lp[1]));
     });
-    updateAddrVisibility();
+    entrances.forEach(function (e) { var c = e.geometry.coordinates; geo.ent.add(ptItem(e, c[1], c[0])); });
+    pois.forEach(function (f) { var c = f.geometry.coordinates; geo.poi.add(ptItem(f, c[1], c[0])); });
+    bldLoaded = true;
+    bldLayer.redraw();
 
     buildSearchIndex();
-    map.on("moveend zoomend", renderLabels);
-    map.on("zoomend", updateAddrVisibility);
     renderLabels();
     console.log("[blokkterkep] loaded", {
-      buildings: polyFeats.length, points: blocks.length - polyFeats.length,
+      buildings: nPoly, points: blocks.length - nPoly,
       entrances: entrances.length, overrides: overrideCount,
     });
     if (overrideCount) toast(t("toast.overrides", { n: overrideCount }));
   }
-
-  function updateAddrVisibility() {
-    if (!addrLayer) return;
-    if (map.getZoom() >= 15) { if (!map.hasLayer(addrLayer)) addrLayer.addTo(map); }
-    else if (map.hasLayer(addrLayer)) map.removeLayer(addrLayer);
+  function drawBuildings(ctx, b) {
+    if (!bldLoaded) return;
+    var v = drawView(b), z = v.z, list = geo.bld.query(v.x0, v.y0, v.x1, v.y1);
+    ctx.lineJoin = "round";
+    // other buildings first, so the blue blocks lie on top
+    ["other", "apartments", "ovr"].forEach(function (cls) {
+      var st = BLD_STYLE[cls], any = false;
+      ctx.beginPath();
+      for (var i = 0; i < list.length; i++) {
+        var it = list[i];
+        if (it.cls !== cls) continue;
+        for (var k = 0; k < it.rings.length; k++) tracePath(ctx, it.rings[k], v, true);
+        any = true;
+      }
+      if (!any) return;
+      ctx.globalAlpha = st[1]; ctx.fillStyle = st[0]; ctx.fill("evenodd");
+      ctx.globalAlpha = 1; ctx.strokeStyle = st[2]; ctx.lineWidth = z < 15 ? Math.min(st[3], 0.8) : st[3]; ctx.stroke();
+    });
+    if (z < 15) return;
+    // address points (and own points) without a building outline
+    var dots = geo.dots.query(v.x0, v.y0, v.x1, v.y1);
+    [false, true].forEach(function (ovr) {
+      ctx.beginPath();
+      dots.forEach(function (d) {
+        if (d.ovr !== ovr) return;
+        var x = d.x * v.S - v.ox, y = d.y * v.S - v.oy, r = ovr ? 6 : 4;
+        ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, 2 * Math.PI);
+      });
+      ctx.globalAlpha = 0.9; ctx.fillStyle = ovr ? "#a78bfa" : "#d1d5db"; ctx.fill();
+      ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = ovr ? "#6d28d9" : "#4b5563"; ctx.stroke();
+    });
   }
 
   // ------------------------------------------------------------------ overrides
@@ -648,130 +774,189 @@
   }
 
   // ------------------------------------------------------------------ labels
-  // priority: block labels + staircase pills > street names > other buildings / address points
-  function renderLabels() {
-    var boxes = [];
-    var addrLabels = renderBlockLabels(boxes) || [];
-    renderStreetLabels(boxes);
-    renderPoiLabels(boxes);
-    addrLabels.forEach(function (a) { if (!overlaps(a.box, boxes)) labelLayer.addLayer(a.marker); });
+  // priority: block labels + staircase pills > street names > places > other buildings / address points
+  function renderLabels() { labelsLayer.redraw(); }
+  var poiHits = [];  // where the place badges were drawn (layer points), for taps
+  function drawLabels(ctx) {
+    poiHits = [];
+    var V = labelView(), boxes = [], blk = [], addr = [], pills = [], streets = [], places = [];
+    collectBlockLabels(V, boxes, blk, addr, pills);
+    collectStreetLabels(V, boxes, streets);
+    collectPois(V, boxes, places);
+    var ox = V.tlx, oy = V.tly, up = rot.on ? rot.shown * Math.PI / 180 : 0;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round"; ctx.miterLimit = 2;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)"; ctx.lineWidth = 3.5;
+    ctx.font = STREET_FONT;
+    streets.forEach(function (s) { haloText(ctx, s.x + ox, s.y + oy, s.a, s.text, s.color); });
+    places.forEach(function (p) {
+      drawPoi(ctx, p, p.cx + ox, p.cy + oy, up);
+      poiHits.push({ f: p.f, box: [p.hit[0] + ox, p.hit[1] + oy, p.hit[2] + ox, p.hit[3] + oy] });
+    });
+    var font = null;
+    addr.filter(function (a) { return !overlaps(a.box, boxes); }).concat(blk).forEach(function (l) {
+      if (l.font !== font) ctx.font = font = l.font;
+      haloText(ctx, l.cx + ox, l.cy + oy, up, l.text, l.color);
+    });
+    ctx.font = PILL_FONT;
+    pills.forEach(function (p) { drawPill(ctx, p, p.cx + ox, p.cy + oy, up); });
   }
-  // places get an icon (always, where it fits) and their name (where that fits too);
-  // block labels, pills and street names keep priority
+  function haloText(ctx, x, y, a, text, color) {
+    if (a) { ctx.save(); ctx.translate(x, y); ctx.rotate(a); x = y = 0; }
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color; ctx.fillText(text, x, y);
+    if (a) ctx.restore();
+  }
+  function rrect(ctx, x, y, w, h, r) {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  // staircase pill (orange), street-number pill (white, orange rim), unlabelled entrance (dot); own ones purple
+  function drawPill(ctx, p, x, y, up) {
+    ctx.save(); ctx.translate(x, y); if (up) ctx.rotate(up);
+    var fill = p.ovr ? "#7c3aed" : "#ff5f14";
+    if (p.kind === "dot") {
+      ctx.beginPath(); ctx.arc(0, 0.8, 6.5, 0, 2 * Math.PI); ctx.fillStyle = "rgba(0, 0, 0, 0.22)"; ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, 6, 0, 2 * Math.PI); ctx.fillStyle = "#fff"; ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, 4.5, 0, 2 * Math.PI); ctx.fillStyle = fill; ctx.fill();
+    } else {
+      var num = p.kind === "num" && !p.ovr, w = p.w, h = 19;
+      ctx.beginPath(); rrect(ctx, -w / 2, -h / 2 + 1, w, h, h / 2); ctx.fillStyle = "rgba(0, 0, 0, 0.22)"; ctx.fill();
+      ctx.beginPath(); rrect(ctx, -w / 2, -h / 2, w, h, h / 2); ctx.fillStyle = num ? fill : "#fff"; ctx.fill();
+      ctx.beginPath(); rrect(ctx, -w / 2 + 1.5, -h / 2 + 1.5, w - 3, h - 3, h / 2 - 1.5); ctx.fillStyle = num ? "#fff" : fill; ctx.fill();
+      ctx.fillStyle = num ? "#c43d00" : "#fff"; ctx.fillText(p.text, 0, 0.5);
+    }
+    ctx.restore();
+  }
+  function collectBlockLabels(V, boxes, out, addr, pills) {
+    var z = V.z;
+    if (z < LABEL_MIN_ZOOM) return;
+    var vis = placeItems(queryView(geo.lbl, V, 0.15).filter(function (it) { return !(it.f.properties.kind === "address" && z < 17); }), V);
+    nearestFirst(vis, V, function (it) { return it.f.properties.kind === "apartments" ? 0 : 1e9; }, MAX_BLOCK_LABELS);  // apartments first
+    vis.forEach(function (it) {
+      var p = it.f.properties, apt = p.kind === "apartments";
+      var font = (apt ? "700 " : "500 ") + (z >= 18 ? 15 : apt ? 13 : 12) + "px " + FONT_FAMILY;
+      var l = { cx: it.cx, cy: it.cy, text: p.label, font: font, color: p.override ? "#5b21b6" : apt ? "#0c2454" : "#374151",
+        box: rotBox(it.cx, it.cy, textWidth(font, p.label) + 6, 18) };
+      // only apartment blocks (and own overrides) outrank street names; plain houses and address points yield
+      if (p.kind === "address" || (p.kind === "other" && !p.override)) { addr.push(l); return; }
+      boxes.push(l.box);
+      out.push(l);
+    });
+    if (z < STAIR_MIN_ZOOM) return;
+    // street-number pills ("nr. 13A") only from z18; at z17 they would bury the block labels
+    var sv = placeItems(queryView(geo.ent, V, 0.15).filter(function (it) {
+      return z >= NUM_MIN_ZOOM || !/^nr\. /.test(it.f.properties.label || "");
+    }), V);
+    nearestFirst(sv, V, function (it) { return it.f.properties.label ? 0 : 1e9; }, MAX_STAIR_LABELS);
+    sv.forEach(function (it) {
+      var e = it.f.properties, l = e.label, text = l ? l.replace(/^(Sc|nr)\. /, "") : "";
+      var w = l ? textWidth(PILL_FONT, text) + 15 : 12;
+      boxes.push(rotBox(it.cx, it.cy, w + 1, 18));
+      pills.push({ cx: it.cx, cy: it.cy, text: text, w: w, ovr: !!e.override, kind: !l ? "dot" : l.indexOf("nr. ") === 0 ? "num" : "sc" });
+    });
+  }
+  // places get an icon (always, where it fits) and their name (where that fits too)
   var MAX_POIS = 160;
-  function renderPoiLabels(boxes) {
-    poiLayer.clearLayers();
-    var z = map.getZoom();
+  var POI_COLOR = { food: ["#b4470b", "#d9662a"], grocery: ["#b4470b", "#d9662a"], mall: ["#b4470b", "#d9662a"],
+    pharmacy: ["#0d7a50", "#1b9a68"], health: ["#0d7a50", "#1b9a68"] };
+  var POI_COLOR_DEF = ["#15387a", "#15387a"];
+  var poiImgs = {}, imgTimer = null;
+  function poiImage(g) {  // the icon as a picture, made once per kind
+    var img = poiImgs[g];
+    if (!img) {
+      img = poiImgs[g] = new Image();
+      img.onload = function () { clearTimeout(imgTimer); imgTimer = setTimeout(renderLabels, 30); };
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="' +
+        (POI_COLOR[g] || POI_COLOR_DEF)[0] + '" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' + (POI_ICON[g] || POI_ICON.other) + "</svg>");
+    }
+    return img.complete && img.naturalWidth ? img : null;
+  }
+  function drawPoi(ctx, p, x, y, up) {
+    var col = POI_COLOR[p.g] || POI_COLOR_DEF, img = poiImage(p.g);
+    ctx.save(); ctx.translate(x, y); if (up) ctx.rotate(up);
+    ctx.beginPath(); ctx.arc(0, 1, 12.5, 0, 2 * Math.PI); ctx.fillStyle = "rgba(12, 36, 84, 0.3)"; ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, 12.5, 0, 2 * Math.PI); ctx.fillStyle = col[1]; ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, 11, 0, 2 * Math.PI); ctx.fillStyle = "#fff"; ctx.fill();
+    if (img) ctx.drawImage(img, -7, -7, 14, 14);
+    if (p.name) {
+      ctx.textAlign = "left";
+      ctx.strokeText(p.name, 15, 0); ctx.fillStyle = "#2f3a52"; ctx.fillText(p.name, 15, 0);
+    }
+    ctx.restore();
+  }
+  function collectPois(V, boxes, out) {
+    var z = V.z;
     if (z < 16 || !pois.length) return;
-    var b = map.getBounds(), c = map.getCenter(), vis = [];
-    pois.forEach(function (f) {
-      var p = f.properties, g = poiGroup(p), co = f.geometry.coordinates;
-      if (z < (p._minz || POI_MINZ[g] || 18)) return;
-      if (b.contains([co[1], co[0]])) vis.push(f);
-    });
-    vis.sort(function (a, b2) {
-      return (POI_RANK[poiGroup(a.properties)] - POI_RANK[poiGroup(b2.properties)]) ||
-        c.distanceTo([a.geometry.coordinates[1], a.geometry.coordinates[0]]) - c.distanceTo([b2.geometry.coordinates[1], b2.geometry.coordinates[0]]);
-    });
-    var n = 0;
-    for (var i = 0; i < vis.length && n < MAX_POIS; i++) {
-      var f = vis[i], p = f.properties, g = poiGroup(p), co = f.geometry.coordinates;
-      var cp = map.latLngToContainerPoint([co[1], co[0]]);
-      var ibox = rotBox(cp.x, cp.y, 24, 24);
+    var cx = V.size.x / 2, cy = V.size.y / 2;
+    var vis = placeItems(queryView(geo.poi, V, 0).filter(function (it) {
+      var p = it.f.properties, g = poiGroup(p);
+      return z >= (p._minz || POI_MINZ[g] || 18);
+    }), V);
+    vis.forEach(function (it) { it.k = POI_RANK[poiGroup(it.f.properties)] * 1e8 + (it.cx - cx) * (it.cx - cx) + (it.cy - cy) * (it.cy - cy); });
+    vis.sort(function (a, b) { return a.k - b.k; });
+    for (var i = 0, n = 0; i < vis.length && n < MAX_POIS; i++) {
+      var it = vis[i], p = it.f.properties, g = poiGroup(p);
+      var ibox = rotBox(it.cx, it.cy, 24, 24);
       if (overlaps(ibox, boxes)) continue;
       boxes.push(ibox);
-      var name = z >= 17 || (p._minz || POI_MINZ[g]) <= 16 ? p.n : "";
-      var nw = name ? textW(name) + 8 : 0, withName = false;
+      var name = z >= 17 || (p._minz || POI_MINZ[g]) <= 16 ? p.n : "", hit = ibox;
       if (name) {
-        var nbox = rot.on ? rotBox(cp.x + 12 + nw / 2, cp.y, nw, 16) : [cp.x + 13, cp.y - 8, cp.x + 13 + nw, cp.y + 8];
-        if (!overlaps(nbox, boxes)) { boxes.push(nbox); withName = true; }
+        var nw = textW(name) + 8;
+        var nbox = rot.on ? rotBox(it.cx + 12 + nw / 2, it.cy, nw, 16) : [it.cx + 13, it.cy - 8, it.cx + 13 + nw, it.cy + 8];
+        if (!overlaps(nbox, boxes)) { boxes.push(nbox); hit = mergeBB(ibox, nbox); } else name = "";
       }
-      (function (feat) {
-        var m = L.marker([co[1], co[0]], {
-          icon: L.divIcon({ className: "poi g-" + g, iconSize: [0, 0],
-            html: '<div class="poi-in"><i>' + poiIcon(g) + "</i>" + (withName ? "<b>" + esc(name) + "</b>" : "") + "</div>" }),
-          keyboard: false, bubblingMouseEvents: false,
-        });
-        m.on("click", function () { openPoi(feat); });
-        poiLayer.addLayer(m);
-      })(f);
+      out.push({ cx: it.cx, cy: it.cy, g: g === "override" ? "other" : g, name: name, f: it.f, hit: hit });
       n++;
     }
   }
-  function renderBlockLabels(boxes) {
-    labelLayer.clearLayers(); stairLayer.clearLayers();
-    var z = map.getZoom(), addrLabels = [];
-    if (z < LABEL_MIN_ZOOM) return addrLabels;
-    var b = map.getBounds().pad(0.15), c = map.getCenter(), count = 0;
-    var vis = [];
-    blocks.forEach(function (f) {
-      var p = f.properties;
-      if (!p.label || !p.lp || p.kind === "address" && z < 17) return;
-      if (b.contains(p.lp)) vis.push(f);
-    });
-    if (vis.length > MAX_BLOCK_LABELS) { // keep those closest to the centre, apartments first
-      vis.sort(function (a, b2) {
-        var ka = (a.properties.kind === "apartments" ? 0 : 1e9) + c.distanceTo(a.properties.lp);
-        var kb = (b2.properties.kind === "apartments" ? 0 : 1e9) + c.distanceTo(b2.properties.lp);
-        return ka - kb;
-      });
-      vis.length = MAX_BLOCK_LABELS;
+  // a tap on the map: a place badge, else an address point, else the building under the finger
+  function inRingsN(rings, x, y) {
+    var inside = false;
+    for (var k = 0; k < rings.length; k++) {
+      var a = rings[k], n = a.length;
+      for (var i = 0, j = n - 2; i < n; j = i, i += 2) {
+        var yi = a[i + 1], yj = a[j + 1];
+        if ((yi > y) !== (yj > y) && x < (a[j] - a[i]) * (y - yi) / (yj - yi) + a[i]) inside = !inside;
+      }
     }
-    vis.forEach(function (f) {
-      var p = f.properties;
-      var cls = "lbl" + (p.kind === "apartments" ? "" : " other") + (z >= 18 ? " z18" : "") + (p.override ? " ovr" : "");
-      var cp = map.latLngToContainerPoint(p.lp), hw = textD(p.label, z >= 18 ? 15 : 13) / 2 + 3;
-      var box = rotBox(cp.x, cp.y, 2 * hw, 18);
-      var mk = L.marker(p.lp, {
-        icon: L.divIcon({ className: cls, html: "<span>" + esc(p.label) + "</span>", iconSize: [0, 0] }),
-        interactive: false, keyboard: false,
-      });
-      // only apartment blocks (and own overrides) outrank street names; plain houses and address points yield
-      if (p.kind === "address" || (p.kind === "other" && !p.override)) { addrLabels.push({ box: box, marker: mk }); count++; return; }
-      boxes.push(box);
-      labelLayer.addLayer(mk);
-      count++;
-    });
-    if (z < STAIR_MIN_ZOOM) return addrLabels;
-    var sv = [];
-    entrances.forEach(function (e) {
-      var g = e.geometry.coordinates;
-      // street-number pills ("nr. 13A") only from z18; at z17 they would bury the block labels
-      if (z < NUM_MIN_ZOOM && /^nr\. /.test(e.properties.label || "")) return;
-      if (b.contains([g[1], g[0]])) sv.push(e);
-    });
-    if (sv.length > MAX_STAIR_LABELS) {
-      sv.sort(function (a, b2) {
-        return (a.properties.label ? 0 : 1e9) + c.distanceTo([a.geometry.coordinates[1], a.geometry.coordinates[0]]) -
-          ((b2.properties.label ? 0 : 1e9) + c.distanceTo([b2.geometry.coordinates[1], b2.geometry.coordinates[0]]));
-      });
-      sv.length = MAX_STAIR_LABELS;
+    return inside;
+  }
+  function hitTest(e) {
+    var lp = e.layerPoint, i;
+    for (i = poiHits.length - 1; i >= 0; i--) {
+      var h = poiHits[i].box;
+      if (lp.x >= h[0] && lp.x <= h[2] && lp.y >= h[1] && lp.y <= h[3]) return poiHits[i].f;
     }
-    sv.forEach(function (e) {
-      var g = e.geometry.coordinates, l = e.properties.label;
-      var sp = map.latLngToContainerPoint([g[1], g[0]]), sw = l ? textD(l.replace(/^(Sc|nr)\. /, ""), 11.5) / 2 + 8 : 6;
-      boxes.push(rotBox(sp.x, sp.y, 2 * sw, 18));
-      stairLayer.addLayer(L.marker([g[1], g[0]], {
-        icon: L.divIcon({ className: "stair" + (l ? "" : " nolabel") + (l && l.indexOf("nr. ") === 0 ? " num" : "") + (e.properties.override ? " ovr" : ""),
-          html: "<span>" + esc(l ? l.replace(/^(Sc|nr)\. /, "") : "") + "</span>", iconSize: [0, 0] }),
-        interactive: false, keyboard: false,
-      }));
+    var z = map.getZoom(), S = 256 * Math.pow(2, z), x = mx(e.latlng.lng), y = my(e.latlng.lat);
+    if (z >= 15) {
+      var r = 12 / S, best = null, bd = Infinity;
+      geo.dots.query(x - r, y - r, x + r, y + r).forEach(function (d) {
+        var dd = Math.hypot(d.x - x, d.y - y);
+        if (dd <= r && dd < bd) { bd = dd; best = d.f; }
+      });
+      if (best) return best;
+    }
+    var hit = null, ha = Infinity;
+    geo.bld.query(x, y, x, y).forEach(function (it) {
+      if (!inRingsN(it.rings, x, y)) return;
+      var area = (it.bb[2] - it.bb[0]) * (it.bb[3] - it.bb[1]) + (it.cls === "other" ? 1 : 0);  // blocks first, then the smallest
+      if (area < ha) { ha = area; hit = it.f; }
     });
-    return addrLabels;
+    return hit;
   }
 
   // ------------------------------------------------------------------ place card
   var hlLayer = null;
   function highlight(f) {
     clearHighlight();
-    if (f._layer && f._layer.setStyle && f.geometry.type !== "Point") {
-      f._layer._origStyle = blocksLayer.options.style(f);
-      f._layer.setStyle(HL); f._layer.bringToFront && f._layer.bringToFront();
-      hlLayer = f._layer;
-    }
+    if (f.geometry.type === "Point") return;
+    hlLayer = L.geoJSON(f, { renderer: routeCanvas, interactive: false,
+      style: { color: "#f97316", weight: 4, fillColor: BLD_STYLE[f.properties.kind === "apartments" ? "apartments" : "other"][0], fillOpacity: 0.5 } }).addTo(map);
   }
   function clearHighlight() {
-    if (hlLayer && hlLayer._origStyle) hlLayer.setStyle(hlLayer._origStyle);
+    if (hlLayer) map.removeLayer(hlLayer);
     hlLayer = null;
   }
   // what is painted on the plate: block number, else the house number, else whatever label we have
@@ -1187,13 +1372,15 @@
     var li = e.target.closest("li[data-i]");
     if (li) goTo(resEl._r[+li.getAttribute("data-i")]);
   });
-  map.on("click", function () {
+  map.on("click", function (e) {
     resEl.hidden = true; qEl.blur();
+    var f = nav.active ? null : hitTest(e);
+    if (f) { if (f.properties.kind === "poi") openPoi(f); else openPlace(f); return; }
     if (sheetSpec && (sheetSpec.kind === "place" || sheetSpec.kind === "settings" || sheetSpec.kind === "intro")) closeSheet();
   });
   function goTo(f) {
     resEl.hidden = true; qEl.blur();
-    var p = f.properties, ll;
+    var p = f.properties;
     if (p.kind === "street") { showStreet(f); return; }
     if (p.kind === "poi") {
       var c0 = f.geometry.coordinates;
@@ -1202,10 +1389,10 @@
       return;
     }
     if (f.geometry.type === "Point") {
-      ll = L.latLng(p.lp); map.setView(ll, 18);
+      map.setView(p.lp, 18);
     } else {
-      var b = f._layer.getBounds(); ll = L.latLng(p.lp);
-      map.fitBounds(b, { maxZoom: 18, padding: [60, 60] });
+      var bb = p._bb;
+      map.fitBounds(L.latLngBounds([bb[0], bb[1]], [bb[2], bb[3]]), { maxZoom: 18, padding: [60, 60] });
       if (map.getZoom() < 17) map.setZoom(17);
     }
     setTimeout(function () { openPlace(f); }, 350);
@@ -1225,7 +1412,9 @@
   }
   function renderSheet() {
     if (!sheetSpec) return;
-    sheetBody.innerHTML = sheetSpec.html();
+    var h = sheetSpec.html();
+    if (h === sheetBody._html && sheetSpec === sheetBody._spec) return;  // navigation re-renders every fix; mostly nothing changed
+    sheetBody.innerHTML = h; sheetBody._html = h; sheetBody._spec = sheetSpec;
     if (sheetSpec.after) sheetSpec.after(sheetBody);
     syncSheetHeight();
   }
@@ -1240,9 +1429,18 @@
   }
   function syncSheetHeight() {
     requestAnimationFrame(function () {
-      document.documentElement.style.setProperty("--sheet-h", sheetEl.hidden ? "0px" : sheetEl.offsetHeight + "px");
+      var h = ui.sheetH;
+      measureUi();
+      if (h !== ui.sheetH) document.documentElement.style.setProperty("--sheet-h", ui.sheetH + "px");
     });
   }
+  // sizes of the bars over the map, read when they change rather than on every GPS fix
+  function measureUi() {
+    ui.topBottom = $("topbar").getBoundingClientRect().bottom;
+    ui.navBottom = $("navbar").hidden ? 0 : $("navbar").getBoundingClientRect().bottom;
+    ui.sheetH = sheetEl.hidden ? 0 : sheetEl.offsetHeight;
+  }
+  window.addEventListener("resize", function () { measureUi(); });
   if (window.ResizeObserver) new ResizeObserver(syncSheetHeight).observe(sheetEl);
   sheetEl.addEventListener("click", function (e) {
     if (e.target.closest(".sheet-close")) {
@@ -1402,12 +1600,12 @@
     var v = loc.speed || 0;                      // m/s
     return v > 14 ? 16 : v > 5 ? 17 : 18;        // > 50 km/h, > 18 km/h, slower
   }
-  var MAP_EL = map.getContainer(), RENDERERS = [canvas, ctxCanvas, roadCanvas, routeCanvas];
+  var MAP_EL = map.getContainer(), RENDERERS = [baseLayer, bldLayer, labelsLayer, routeCanvas];
   function enterRotation() {
     if (rot.on) return;
     // the visible map strip lies between the turn banner and the sheet; the user sits low in it
-    var w = window.innerWidth, top = $("navbar").getBoundingClientRect().bottom + 8;
-    var bottom = window.innerHeight - (sheetEl.hidden ? 0 : sheetEl.offsetHeight);
+    var w = window.innerWidth, top = ui.navBottom + 8;
+    var bottom = window.innerHeight - ui.sheetH;
     if (bottom - top < 160) { top = 0; bottom = window.innerHeight; }
     var px = w / 2, py = top + 0.72 * (bottom - top);
     // a square around the user, big enough that turning it never uncovers a corner of that strip
@@ -1417,7 +1615,7 @@
     MAP_EL.style.left = (px - D / 2) + "px"; MAP_EL.style.top = (py - D / 2) + "px";
     MAP_EL.style.width = D + "px"; MAP_EL.style.height = D + "px";
     MAP_EL.style.right = MAP_EL.style.bottom = "auto";
-    RENDERERS.forEach(function (r) { r.options.padding = 0.1; });  // keeps the canvases within phone limits
+    RENDERERS.forEach(function (r) { r.options.padding = r === labelsLayer ? 0.05 : 0.1; });  // keeps the canvases within phone limits
     map.invalidateSize({ pan: false });
   }
   function exitRotation() {
@@ -1427,7 +1625,7 @@
     MAP_EL.classList.remove("rotated");
     ["left", "top", "width", "height", "right", "bottom", "transform", "transition"].forEach(function (k) { MAP_EL.style[k] = ""; });
     MAP_EL.style.removeProperty("--bearing");
-    RENDERERS.forEach(function (r) { r.options.padding = r === routeCanvas ? 0.5 : 0.4; });
+    RENDERERS.forEach(function (r) { r.options.padding = r._basePad != null ? r._basePad : 0.5; });
     map.invalidateSize({ pan: false });
     if (pos) map.setView(map.unproject(map.project(pos, z).add(map.getSize().divideBy(2)).subtract(pivot), z), z, { animate: false });
   }
@@ -1462,8 +1660,8 @@
       return;
     }
     var size = map.getSize(), z = map.getZoom();
-    var top = nav.active ? $("navbar").getBoundingClientRect().bottom + 12 : $("topbar").getBoundingClientRect().bottom + 8;
-    var bottom = size.y - (sheetEl.hidden ? 0 : sheetEl.offsetHeight);
+    var top = nav.active ? ui.navBottom + 12 : ui.topBottom + 8;
+    var bottom = size.y - ui.sheetH;
     if (bottom - top < 120) { top = 0; bottom = size.y; }
     var at = L.point(size.x / 2, (top + bottom) / 2);
     if (nav.active) {
@@ -1551,14 +1749,44 @@
   }
 
   // ------------------------------------------------------------------ directions
-  var routerData = null, router = null;
-  function getRouter() {
-    if (!router && routerData && window.BlokkRouter) router = BlokkRouter.fromGeoJSON(routerData);
-    return router;
+  // The routing graph is built and searched in a worker (route-worker.js), so neither the one-off build
+  // (over a second on a phone) nor a reroute ever freezes the map. Without workers it runs on the page.
+  var routerData = null, router = null, worker = null, workerReqs = {}, workerSeq = 0;
+  function startRouter(buf, gj) {
+    routerData = gj;
+    if (!window.Worker) return;
+    try {
+      worker = new Worker("route-worker.js");
+      worker.onmessage = function (e) {
+        var m = e.data, q = workerReqs[m.id];
+        if (m.type !== "route" || !q) return;
+        delete workerReqs[m.id];
+        q.cb(m.res);
+      };
+      worker.onerror = function (e) { console.warn("route worker:", e.message); dropWorker(); };
+      worker.postMessage({ type: "data", buf: buf }, [buf]);
+    } catch (e) { worker = null; }
+  }
+  function dropWorker() {  // fall back to routing on the page; requests already sent are asked again here
+    if (worker) worker.terminate();
+    worker = null;
+    var reqs = workerReqs; workerReqs = {};
+    Object.keys(reqs).forEach(function (id) { var q = reqs[id]; findRoute(q.from, q.to, q.mode, q.cb); });
+  }
+  function findRoute(from, to, mode, cb) {
+    if (worker) {
+      var id = ++workerSeq;
+      workerReqs[id] = { from: from, to: to, mode: mode, cb: cb };
+      worker.postMessage({ type: "route", id: id, from: from, to: to, mode: mode });
+      return;
+    }
+    if (!routerData) { setTimeout(function () { findRoute(from, to, mode, cb); }, 500); return; }  // roads still loading
+    if (!router) router = BlokkRouter.fromGeoJSON(routerData);
+    cb(router.route(from, to, mode));
   }
   var MODES = ["car", "bike", "foot"];
   var CAR_FACTOR = 1.25;  // lights, junctions, parking: free-flow road speeds are optimistic in town
-  var route = { dest: null, res: null, cum: null, mode: MODES.indexOf(readPref(PREF.mode)) >= 0 ? readPref(PREF.mode) : "car",
+  var route = { req: 0, dest: null, res: null, cum: null, mode: MODES.indexOf(readPref(PREF.mode)) >= 0 ? readPref(PREF.mode) : "car",
     casing: null, line: null, pin: null };
   var nav = { active: false, seg: 0, off: 0, lastReroute: 0, left: 0, leftTime: 0 };
 
@@ -1588,18 +1816,24 @@
     startLocation(false);
   }
   function computeRoute(fit) {
-    var r = getRouter();
-    if (!r) { toast(t("route.loading"), 2000); setTimeout(function () { computeRoute(fit); }, 700); return; }
-    var res = r.route(loc.pos, route.dest.at, route.mode);
-    if (res && route.mode === "car") res.duration *= CAR_FACTOR;
+    var id = ++route.req, dest = route.dest, mode = route.mode;
+    var slow = setTimeout(function () { if (route.req === id) toast(t("route.loading"), 2500); }, 600);
+    findRoute(loc.pos, dest.at, mode, function (res) {
+      clearTimeout(slow);
+      if (route.req === id && route.dest === dest) routeReady(res, mode, fit);  // else: superseded or closed
+    });
+  }
+  function routeReady(res, mode, fit) {
+    if (res && mode === "car") res.duration *= CAR_FACTOR;
+    if (nav.active && !res) { endNav(false); toast(t("route.none"), 6000); return; }
     route.res = res;
     route.cum = null;
     if (res) {
       route.cum = [0];
       for (var i = 1; i < res.coords.length; i++) route.cum.push(route.cum[i - 1] + BlokkRouter.dist(res.coords[i - 1], res.coords[i]));
     }
+    if (nav.active) { nav.seg = 0; nav.off = 0; updateNav(); return; }  // a reroute: carry on along the new line
     drawRoute();
-    if (nav.active) return;
     if (!res) { openSheet(noRouteSpec()); return; }
     if (sheetSpec && sheetSpec.kind === "route") renderSheet(); else openSheet(routeSpec());
     if (fit) requestAnimationFrame(function () {
@@ -1617,11 +1851,14 @@
     }
     route.casing.setLatLngs(pts);
     route.line.setLatLngs(pts);
-    if (route.pin) map.removeLayer(route.pin);
-    route.pin = route.dest ? L.marker(route.dest.at, {
-      icon: L.divIcon({ className: "dest-pin", iconSize: [0, 0], html: '<div class="pin-plate">' + esc(route.dest.plate) + '</div><div class="pin-dot"></div>' }),
-      interactive: false, keyboard: false, zIndexOffset: 1500,
-    }).addTo(map) : null;
+    if (route.pin && route.pin._dest !== route.dest) { map.removeLayer(route.pin); route.pin = null; }
+    if (!route.pin && route.dest) {
+      route.pin = L.marker(route.dest.at, {
+        icon: L.divIcon({ className: "dest-pin", iconSize: [0, 0], html: '<div class="pin-plate">' + esc(route.dest.plate) + '</div><div class="pin-dot"></div>' }),
+        interactive: false, keyboard: false, zIndexOffset: 1500,
+      }).addTo(map);
+      route.pin._dest = route.dest;
+    }
   }
   function clearRoute() {
     [route.casing, route.line, route.pin].forEach(function (l) { if (l) map.removeLayer(l); });
@@ -1732,6 +1969,7 @@
     resEl.hidden = true;
     openSheet(navSpec());
     updateNav();
+    measureUi();
     drawMe();
     resumeFollow();
     requestWakeLock();
@@ -1746,6 +1984,7 @@
     if (loc.marker) drawMe();  // back from the triangle to the dot
     document.body.classList.remove("navigating");
     $("navbar").hidden = true;
+    measureUi();
     releaseWakeLock();
     closeSheet();
     clearRoute();
@@ -1765,6 +2004,7 @@
       noClose: true,
     };
   }
+  function setHtml(id, h) { var el = $(id); if (el._h !== h) { el.innerHTML = h; el._h = h; } }
   // where on the route are we: nearest point on the polyline, searched from the last known segment on
   function project(pos) {
     var c = route.res.coords, best = null, KXr = 111320 * Math.cos(pos[0] * Math.PI / 180), KYr = 110540;
@@ -1785,11 +2025,9 @@
     var pr = project(loc.pos), now = Date.now();
     if (pr.d > Math.max(35, Math.min(loc.acc, 60))) {
       if (++nav.off >= 2 && now - nav.lastReroute > 6000) {
-        nav.off = 0; nav.lastReroute = now; nav.seg = 0;
+        nav.off = 0; nav.lastReroute = now;
         toast(t("route.recalc"), 2500);
-        computeRoute(false);
-        if (!route.res) { endNav(false); toast(t("route.none"), 6000); return; }
-        pr = project(loc.pos);
+        computeRoute(false);  // the new route takes over when it arrives; until then we stay on this one
       }
     } else nav.off = 0;
     nav.seg = pr.seg;
@@ -1804,15 +2042,13 @@
       if (steps[k].type !== "depart" && steps[k].idx > pr.seg) { next = steps[k]; after = steps[k + 1] || null; break; }
     }
     var toNext = next ? route.cum[next.idx] - pr.along : left;
-    $("nav-arrow").innerHTML = turnSvg(next);
-    $("nav-dist").textContent = fmtDist(Math.max(0, toNext));
-    $("nav-verb").textContent = stepVerb(next);
-    $("nav-street").textContent = stepStreet(next);
-    var thenEl = $("nav-then");
-    if (next && after && next.type !== "arrive" && route.cum[after.idx] - route.cum[next.idx] < 150) {
-      thenEl.innerHTML = esc(t("route.then")) + " " + turnSvg(after) + " " + esc(stepVerb(after));
-      thenEl.hidden = false;
-    } else thenEl.hidden = true;
+    setHtml("nav-arrow", turnSvg(next));
+    setHtml("nav-dist", esc(fmtDist(Math.max(0, toNext))));
+    setHtml("nav-verb", esc(stepVerb(next)));
+    setHtml("nav-street", esc(stepStreet(next)));
+    var thenEl = $("nav-then"), then = next && after && next.type !== "arrive" && route.cum[after.idx] - route.cum[next.idx] < 150;
+    if (then) setHtml("nav-then", esc(t("route.then")) + " " + turnSvg(after) + " " + esc(stepVerb(after)));
+    if (thenEl.hidden !== !then) { thenEl.hidden = !then; measureUi(); }
     nav.left = left;
     nav.leftTime = route.res.duration * left / total;
     if (sheetSpec && sheetSpec.kind === "nav") renderSheet();
@@ -1898,9 +2134,12 @@
     });
   }
 
+  appReady = true;  // every variable above is set: the canvases may draw now
+  [baseLayer, bldLayer, labelsLayer].forEach(function (l) { l.redraw(); });
+
   setBasemap(readPref(PREF.basemap) !== "0", false);  // on by default; switched off only when the user did
   setTraffic(readPref(PREF.traffic) !== "0", false);  // on by default when a key is configured
   initLocation();
 
-  window.__blokk = { map: map, trafficOn: trafficOn, route: function () { return route; }, nav: function () { return nav; }, loc: function () { return loc; }, streetStats: function () { return streetStats; }, renderLabels: renderLabels, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
+  window.__blokk = { map: map, trafficOn: trafficOn, route: function () { return route; }, nav: function () { return nav; }, loc: function () { return loc; }, streetStats: function () { return streetStats; }, renderLabels: renderLabels, poiHits: function () { return poiHits; }, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
 })();
