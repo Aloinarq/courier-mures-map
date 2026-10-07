@@ -44,7 +44,7 @@ lat,lon,label,type,street,note
 
 **Hogyan érvényesül:**
 - `block`: ha a pont egy épület körvonalán belül van, annak az épületnek a felirata lecserélődik (lila keret jelzi). Ha nincs ott épület, új lila pont kerül a térképre.
-- `place`: új, névvel kereshető hely jön létre (pl. `46.5442,24.5571,Shopping City,place,Strada X,`), és navigálni is lehet hozzá.
+- `place`: új, névvel kereshető hely jön létre (pl. `LAT,LON,Bolt neve,place,Utca,` – a koordinátát a térképről másold), és navigálni is lehet hozzá.
 - `entrance`: ha 8 méteren belül van egy OSM-bejárat, annak a felirata cserélődik. Ha nincs, új bejárat jön létre, és a legközelebbi (50 m-en belüli) épülethez kapcsolódik.
 - A `#`-tel kezdődő sorokat a program kihagyja.
 - Mentés után elég frissíteni az oldalt, a `fetch_data.py`-t nem kell újra futtatni.

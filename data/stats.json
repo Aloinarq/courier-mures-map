@@ -126,5 +126,7 @@
  "roads": 11578,
  "street_names": 644,
  "roads_bytes": 2557592,
- "context_bytes": 35365
+ "context_bytes": 35365,
+ "pois": 1609,
+ "pois_bytes": 355875
 }
