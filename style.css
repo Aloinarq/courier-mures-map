@@ -238,6 +238,26 @@ body.navigating #toast { top: calc(150px + var(--safe-top)); }
 /* heading-up navigation: the map element itself is turned (see enterRotation in app.js) */
 #map.rotated { position: fixed; inset: auto; will-change: transform; }
 
+/* named places: small enamel badge + name; counter-rotated like the other labels */
+.poi { background: transparent; border: 0; }
+.poi-in { position: absolute; left: -11px; top: -11px; display: flex; align-items: center; gap: 4px; white-space: nowrap;
+  transform: rotate(var(--bearing, 0deg)); transform-origin: 11px 11px; cursor: pointer; }
+.poi-in i { flex: none; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: #fff; color: var(--plate);
+  box-shadow: 0 0 0 1.5px var(--plate), 0 1px 3px rgba(12, 36, 84, .35); }
+.poi-in i svg { width: 14px; height: 14px; stroke-width: 2.2; }
+.poi-in b { font: 500 12px/1 var(--font); color: #2f3a52; text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
+.poi.g-food .poi-in i, .poi.g-grocery .poi-in i, .poi.g-mall .poi-in i { color: #b4470b; box-shadow: 0 0 0 1.5px #d9662a, 0 1px 3px rgba(0,0,0,.3); }
+.poi.g-pharmacy .poi-in i, .poi.g-health .poi-in i { color: #0d7a50; box-shadow: 0 0 0 1.5px #1b9a68, 0 1px 3px rgba(0,0,0,.3); }
+#results .r-num.poi { background: #fff; color: var(--plate); box-shadow: inset 0 0 0 2px var(--plate); }
+#results .r-num.poi svg { width: 22px; height: 22px; }
+#results .r-num.poi.g-food, #results .r-num.poi.g-grocery, #results .r-num.poi.g-mall { color: #b4470b; box-shadow: inset 0 0 0 2px #d9662a; }
+#results .r-num.poi.g-pharmacy, #results .r-num.poi.g-health { color: #0d7a50; box-shadow: inset 0 0 0 2px #1b9a68; }
+.poi-plate { flex: none; width: 76px; min-width: 76px !important; display: grid !important; place-items: center; }
+.poi-plate svg { width: 40px; height: 40px; stroke-width: 2; }
+.poi-name { font-size: 19px !important; }
+.poi-rows p { margin: 4px 0; font-size: 15px; }
+.poi-rows a { color: var(--plate); font-weight: 500; }
+
 /* you are here: enamel puck with a signal heading cone; glides between GPS fixes.
    While navigating it becomes a triangle that points the way you are going. */
 .me-arrow { display: none; position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; transition: transform .7s linear; }

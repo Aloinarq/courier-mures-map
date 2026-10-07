@@ -234,7 +234,8 @@
   var stairLayer = L.layerGroup().addTo(map);
   var streetLabelLayer = L.layerGroup().addTo(map);
   var roadGroups = [], roadsByName = {}, roadChains = [], streetHl = null, streetIndex = [], streetStats = null;
-  var blocks = [], byId = {}, entrances = [], searchIndex = [], stats = null, overrideCount = 0;
+  var blocks = [], byId = {}, entrances = [], searchIndex = [], stats = null, overrideCount = 0, pois = [], poiIndex = [];
+  var poiLayer = L.layerGroup().addTo(map);
 
   var STYLE = {
     apartments: { renderer: canvas, color: "#1d4ed8", weight: 1.2, fillColor: "#3b82f6", fillOpacity: 0.38 },
@@ -249,8 +250,11 @@
     fetchJSON("data/entrances.geojson"),
     fetchText("data/overrides.csv").catch(function (e) { console.warn("overrides.csv:", e.message); return ""; }),
     fetchJSON("data/stats.json").catch(function () { return null; }),
+    fetchJSON("data/pois.geojson").catch(function (e) { console.warn("pois:", e.message); return { features: [] }; }),
   ]).then(function (res) {
     stats = res[3];
+    pois = res[4].features;
+    pois.forEach(function (f) { f.properties.kind = "poi"; });
     build(res[0], res[1], parseCSV(res[2]));
   }).catch(function (e) {
     console.error(e);
@@ -601,6 +605,11 @@
       var type = fold(r.type || "block").trim(), label = (r.label || "").trim();
       if (!isFinite(lat) || !isFinite(lon) || !label) { console.warn("overrides.csv: skipped row", i + 2, r); return; }
       n++;
+      if (type === "place" || type === "poi" || type === "hely" || type === "loc") {
+        pois.push({ type: "Feature", geometry: { type: "Point", coordinates: [lon, lat] },
+          properties: { kind: "poi", n: label, k: "override", v: "override", st: r.street || "", note: r.note || "", override: true } });
+        return;
+      }
       if (type === "entrance" || type === "scara" || type === "lepcsohaz") {
         var lab = stairLabel(label), best = null, bd = 8;
         var p = pxy(lat, lon);
@@ -644,7 +653,50 @@
     var boxes = [];
     var addrLabels = renderBlockLabels(boxes) || [];
     renderStreetLabels(boxes);
+    renderPoiLabels(boxes);
     addrLabels.forEach(function (a) { if (!overlaps(a.box, boxes)) labelLayer.addLayer(a.marker); });
+  }
+  // places get an icon (always, where it fits) and their name (where that fits too);
+  // block labels, pills and street names keep priority
+  var MAX_POIS = 160;
+  function renderPoiLabels(boxes) {
+    poiLayer.clearLayers();
+    var z = map.getZoom();
+    if (z < 16 || !pois.length) return;
+    var b = map.getBounds(), c = map.getCenter(), vis = [];
+    pois.forEach(function (f) {
+      var p = f.properties, g = poiGroup(p), co = f.geometry.coordinates;
+      if (z < (p._minz || POI_MINZ[g] || 18)) return;
+      if (b.contains([co[1], co[0]])) vis.push(f);
+    });
+    vis.sort(function (a, b2) {
+      return (POI_RANK[poiGroup(a.properties)] - POI_RANK[poiGroup(b2.properties)]) ||
+        c.distanceTo([a.geometry.coordinates[1], a.geometry.coordinates[0]]) - c.distanceTo([b2.geometry.coordinates[1], b2.geometry.coordinates[0]]);
+    });
+    var n = 0;
+    for (var i = 0; i < vis.length && n < MAX_POIS; i++) {
+      var f = vis[i], p = f.properties, g = poiGroup(p), co = f.geometry.coordinates;
+      var cp = map.latLngToContainerPoint([co[1], co[0]]);
+      var ibox = rotBox(cp.x, cp.y, 24, 24);
+      if (overlaps(ibox, boxes)) continue;
+      boxes.push(ibox);
+      var name = z >= 17 || (p._minz || POI_MINZ[g]) <= 16 ? p.n : "";
+      var nw = name ? textW(name) + 8 : 0, withName = false;
+      if (name) {
+        var nbox = rot.on ? rotBox(cp.x + 12 + nw / 2, cp.y, nw, 16) : [cp.x + 13, cp.y - 8, cp.x + 13 + nw, cp.y + 8];
+        if (!overlaps(nbox, boxes)) { boxes.push(nbox); withName = true; }
+      }
+      (function (feat) {
+        var m = L.marker([co[1], co[0]], {
+          icon: L.divIcon({ className: "poi g-" + g, iconSize: [0, 0],
+            html: '<div class="poi-in"><i>' + poiIcon(g) + "</i>" + (withName ? "<b>" + esc(name) + "</b>" : "") + "</div>" }),
+          keyboard: false, bubblingMouseEvents: false,
+        });
+        m.on("click", function () { openPoi(feat); });
+        poiLayer.addLayer(m);
+      })(f);
+      n++;
+    }
   }
   function renderBlockLabels(boxes) {
     labelLayer.clearLayers(); stairLayer.clearLayers();
@@ -729,6 +781,7 @@
     return p.housenumber || p.label || "?";
   }
   function openPlace(f) {
+    if (f.properties.kind === "poi") { openPoi(f); return; }
     if (nav.active) return;
     highlight(f);
     var p = f.properties;
@@ -774,6 +827,39 @@
     });
   }
 
+  var poiHl = null;
+  function openPoi(f) {
+    if (nav.active) return;
+    var p = f.properties, g = poiGroup(p), c = f.geometry.coordinates, at = [c[1], c[0]];
+    if (poiHl) map.removeLayer(poiHl);
+    poiHl = L.circleMarker(at, { renderer: routeCanvas, radius: 16, color: "#ff5f14", weight: 3, fill: false, interactive: false }).addTo(map);
+    openSheet({
+      kind: "place",
+      html: function () {
+        var addr = poiAddress(p), rows = [];
+        if (p.oh) rows.push("<b>" + esc(t("poi.hours")) + ":</b> " + esc(p.oh));
+        if (p.ph) rows.push("<b>" + esc(t("poi.phone")) + ":</b> " + p.ph.split(/[;,]/).map(function (n) {
+          n = n.trim(); return '<a href="tel:' + esc(n.replace(/[^+0-9]/g, "")) + '">' + esc(n) + "</a>";
+        }).join(", "));
+        if (p.cu) rows.push(esc(p.cu.replace(/_/g, " ").replace(/;/g, ", ")));
+        if (p.note) rows.push(esc(p.note));
+        return '<div class="house"><div class="plate poi-plate">' + poiIcon(g) + '</div>' +
+          '<div class="house-side"><span class="house-kind">' + esc(catLabel(g)) + '</span><span class="house-street poi-name">' + esc(p.n) + "</span>" +
+          (addr ? '<div class="facts">' + esc(addr) + "</div>" : "") + "</div></div>" +
+          (rows.length ? '<div class="poi-rows">' + rows.map(function (r) { return "<p>" + r + "</p>"; }).join("") + "</div>" : "") +
+          '<div class="actions"><button class="btn go" data-act="route">' + ICON.go + esc(t("place.navigate")) + "</button>" +
+          '<a class="btn ghost" href="' + gmapsUrl(at) + '" target="_blank" rel="noopener" aria-label="' + esc(t("place.mapsAria")) + '">' + ICON.ext + "Maps</a></div>" +
+          '<div class="osm-id">' + esc(t("popup.coords")) + " " + at[0].toFixed(6) + ", " + at[1].toFixed(6) + "</div>";
+      },
+      acts: {
+        route: function () {
+          planRoute({ at: at, f: f, title: p.n, street: poiAddress(p), plate: p.n.length > 18 ? p.n.slice(0, 17) + "…" : p.n });
+        },
+      },
+      onClose: function () { if (poiHl) { map.removeLayer(poiHl); poiHl = null; } },
+    });
+  }
+
   // ------------------------------------------------------------------ search
   // every number an address answers to: "29-33" -> 29, 31, 33; "32 A/B" -> 32a, 32b; "45A, 45B" -> 45a, 45b
   function numberTokens(v) {
@@ -798,7 +884,117 @@
     }
     return 0;
   }
+  // ---------- named places (POIs)
+  var POI_ICON = {
+    food: '<path d="M7 3v7M5 3v4a2 2 0 0 0 4 0V3M7 10v11M17 21V3c-2 1-3.5 3.5-3.5 7 0 2 1.5 3 3.5 3"/>',
+    grocery: '<path d="M3 4h2l2.3 11h10.4L20 7H6.2"/><circle cx="9" cy="19" r="1.4"/><circle cx="17" cy="19" r="1.4"/>',
+    mall: '<path d="M5 8h14l-1 13H6L5 8Z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>',
+    shop: '<path d="M3 12V4h8l10 10-8 8-10-10Z"/><circle cx="7.5" cy="7.5" r="1.3"/>',
+    pharmacy: '<path d="M10 4h4v6h6v4h-6v6h-4v-6H4v-4h6Z"/>',
+    health: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 8v8M15 8v8M9 12h6"/>',
+    money: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
+    fuel: '<path d="M5 21V5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v16M4 21h11M7 8h5M14 10h2a2 2 0 0 1 2 2v4a1.5 1.5 0 0 0 3 0V9l-3-3"/>',
+    education: '<path d="m2 9 10-5 10 5-10 5L2 9Z"/><path d="M6 11v5c3 2 9 2 12 0v-5"/>',
+    worship: '<path d="M12 2v4M10 4h4M6 21V11l6-5 6 5v10M10 21v-4h4v4"/>',
+    transport: '<rect x="5" y="3" width="14" height="14" rx="2"/><path d="M5 11h14M8 20l1-3M16 20l-1-3"/><circle cx="8.5" cy="14" r=".6"/><circle cx="15.5" cy="14" r=".6"/>',
+    hotel: '<path d="M3 19V6M3 14h18v5M21 19v-2.5A3.5 3.5 0 0 0 17.5 13H11v1"/><circle cx="7" cy="10.5" r="1.6"/>',
+    leisure: '<path d="m12 3 2.5 5.4 5.9.6-4.4 4 1.2 5.8L12 16l-5.2 2.8L8 13 3.6 9l5.9-.6L12 3Z"/>',
+    public: '<path d="M3 10h18L12 4 3 10ZM5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18"/>',
+    office: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/>',
+    other: '<circle cx="12" cy="12" r="4"/>',
+  };
+  var POI_GROUP_OF = {};  // "amenity=fast_food" -> "food"
+  [["food", "amenity", "restaurant fast_food cafe bar pub food_court ice_cream biergarten"],
+   ["pharmacy", "amenity", "pharmacy"], ["pharmacy", "shop", "chemist"],
+   ["health", "amenity", "hospital clinic doctors dentist veterinary nursing_home"],
+   ["money", "amenity", "bank atm bureau_de_change money_transfer payment_centre"],
+   ["fuel", "amenity", "fuel charging_station car_wash"],
+   ["education", "amenity", "school kindergarten university college library music_school driving_school language_school training"],
+   ["worship", "amenity", "place_of_worship monastery"],
+   ["transport", "amenity", "bus_station taxi parking ferry_terminal bicycle_rental car_rental"],
+   ["public", "amenity", "townhall police post_office courthouse fire_station embassy community_centre social_facility public_building prison"],
+   ["leisure", "amenity", "theatre cinema arts_centre nightclub casino events_venue"],
+   ["grocery", "amenity", "marketplace"],
+   ["grocery", "shop", "supermarket convenience bakery butcher greengrocer deli alcohol beverages kiosk pastry confectionery dairy seafood coffee tea frozen_food"],
+   ["mall", "shop", "mall department_store"],
+   ["health", "shop", "medical_supply optician hearing_aids"],
+   ["hotel", "tourism", "hotel guest_house hostel motel apartment chalet"],
+   ["public", "office", "government"],
+   ["education", "building", "school university college kindergarten"],
+   ["worship", "building", "church cathedral mosque synagogue"],
+   ["health", "building", "hospital"], ["transport", "building", "train_station"], ["hotel", "building", "hotel"],
+   ["leisure", "building", "stadium sports_hall"], ["public", "building", "government public civic"],
+   ["grocery", "building", "supermarket"], ["office", "building", "commercial retail office"],
+  ].forEach(function (row) { row[2].split(" ").forEach(function (v) { POI_GROUP_OF[row[1] + "=" + v] = row[0]; }); });
+  var POI_KEY_GROUP = { shop: "shop", healthcare: "health", tourism: "leisure", leisure: "leisure", historic: "leisure", sport: "leisure",
+    club: "leisure", office: "office", craft: "office", railway: "transport", public_transport: "transport", aeroway: "transport", amenity: "other" };
+  // big landmarks show from z16, everyday places from z17, the rest from z18
+  var POI_MINZ = { mall: 16, fuel: 16, transport: 17, food: 17, grocery: 17, pharmacy: 17, health: 17, money: 18, education: 17,
+    worship: 17, hotel: 17, public: 17, leisure: 18, shop: 18, office: 18, other: 18, override: 16 };
+  var POI_RANK = { mall: 0, override: 0, transport: 1, health: 1, grocery: 2, food: 2, pharmacy: 2, fuel: 2, education: 3,
+    public: 3, hotel: 3, worship: 4, money: 4, leisure: 5, shop: 5, office: 6, other: 7 };
+  function poiGroup(p) {
+    if (p._g) return p._g;
+    p._g = p.k === "override" ? "override" : POI_GROUP_OF[p.k + "=" + p.v] || POI_KEY_GROUP[p.k] || "other";
+    if (p.v === "hospital" || p.v === "university" || p.v === "station") p._minz = 16;
+    return p._g;
+  }
+  function poiIcon(g) { return svg(POI_ICON[g === "override" ? "other" : g] || POI_ICON.other); }
+  function catLabel(g) { return t("cat." + (g === "override" ? "other" : g)); }
+  function compact(s) { return fold(s).replace(/[^a-z0-9]+/g, ""); }
+  // where each word starts inside the compact name: "BKF Carwash" -> "bkfcarwash", starts {0, 3}
+  function wordStarts(s) {
+    var starts = {}, pos = 0;
+    fold(s).split(/[^a-z0-9]+/).forEach(function (w) { if (w) { starts[pos] = 1; pos += w.length; } });
+    return starts;
+  }
+  // what people type for a specific kind of place, in all three languages (search only, never shown)
+  var KIND_WORDS = {
+    "amenity=hospital": "hospital spital spitalul korhaz", "amenity=clinic": "clinic clinica klinika rendelo policlinica",
+    "amenity=doctors": "doctor medic orvos cabinet", "amenity=dentist": "dentist stomatolog fogorvos",
+    "amenity=pharmacy": "pharmacy farmacie gyogyszertar patika", "shop=chemist": "drugstore drogerie drogeria",
+    "amenity=school": "school scoala liceu iskola gimnazium", "amenity=university": "university universitate facultate egyetem",
+    "amenity=kindergarten": "kindergarten gradinita ovoda", "amenity=police": "police politie politia rendorseg",
+    "amenity=post_office": "post office posta", "amenity=bank": "bank banca", "amenity=atm": "atm bancomat bankautomata",
+    "amenity=fuel": "fuel petrol benzinarie peco benzinkut", "shop=supermarket": "supermarket szupermarket",
+    "shop=convenience": "convenience magazin alimentara abc", "shop=bakery": "bakery brutarie patiserie pekseg",
+    "amenity=restaurant": "restaurant etterem", "amenity=cafe": "cafe cafenea kavezo", "amenity=fast_food": "fast food gyorsetterem",
+    "amenity=bar": "bar", "amenity=pub": "pub", "tourism=hotel": "hotel szalloda", "tourism=guest_house": "pensiune panzio guest house",
+    "amenity=parking": "parking parcare parkolo", "railway=station": "train station gara vasutallomas palyaudvar",
+    "amenity=bus_station": "bus station autogara buszallomas", "amenity=townhall": "town hall primarie polgarmesteri varoshaza",
+    "amenity=place_of_worship": "church biserica templom", "shop=mall": "mall plaza", "amenity=cinema": "cinema mozi",
+    "amenity=theatre": "theatre teatru szinhaz", "leisure=park": "park parc", "leisure=fitness_centre": "gym fitness sala edzoterem",
+  };
+  function catWords(g) {  // category names in every language, so "pharmacy", "farmacie" and "gyógyszertár" all work
+    return Object.keys(LANGS).map(function (code) {
+      return [LANGS[code]["cat." + g], LANGS[code]["catw." + g]].filter(Boolean).join(" ");
+    }).join(" ");
+  }
+  function buildPoiIndex() {
+    poiIndex = pois.map(function (f) {
+      var p = f.properties, g = poiGroup(p);
+      var names = [p.n].concat(p.alt || []).join(" ");
+      var kindW = {};
+      [KIND_WORDS[p.k + "=" + p.v] || "", g === "override" ? "" : catWords(g)].join(" ").split(/\s+/).forEach(function (w) {
+        w = fold(w); if (w) kindW[w] = (kindW[w] || 0) + 1;
+      });
+      (KIND_WORDS[p.k + "=" + p.v] || "").split(/\s+/).forEach(function (w) { if (w) kindW[fold(w)] = 9; });  // the exact kind
+      return {
+        f: f, poi: true, kindW: kindW,
+        name: fold(names), nameC: compact(names), nameStarts: wordStarts(names),
+        hay: fold([names, p.st, p.hn, g === "override" ? "" : catWords(g), p.cu || "", p.note || ""].join(" ")),
+        block: [], nums: numberTokens(p.hn || ""),
+      };
+    });
+  }
+  function poiAddress(p) { return [p.st, p.hn].filter(Boolean).join(" "); }
+  function poiDistance(f) {
+    var ref = loc.pos || [map.getCenter().lat, map.getCenter().lng], c = f.geometry.coordinates;
+    return BlokkRouter.dist(ref, [c[1], c[0]]);
+  }
+
   function buildSearchIndex() {
+    buildPoiIndex();
     searchIndex = blocks.filter(function (f) { var p = f.properties; return p.label || p.street || p.name; })
       .map(function (f) {
         var p = f.properties;
@@ -821,8 +1017,18 @@
     if (m) { blockQ = m[1]; rest = q.replace(m[0], " ").trim(); }
     var toks = rest.replace(/[.,;]/g, " ").split(/\s+/).filter(function (w) { return w && ["str", "strada", "nr", "utca", "street"].indexOf(w) < 0; });
     var out = [];
-    searchIndex.concat(streetIndex).forEach(function (it) {
+    var qC = compact(rest);
+    searchIndex.concat(streetIndex, poiIndex).forEach(function (it) {
       var score = 0;
+      if (it.poi) {
+        if (blockQ) return;
+        // "mcdonalds" finds "McDonald's", "shoppingcity" finds "Shopping City"
+        // the query squashed together, found in the squashed name from the start of a word:
+        // rescues "mcdonalds" for "McDonald's"; a name that starts with the query ranks higher
+        var at = qC.length >= 3 ? it.nameC.indexOf(qC) : -1;
+        while (at > 0 && !it.nameStarts[at]) at = it.nameC.indexOf(qC, at + 1);
+        if (at === 0) score += 20;
+      }
       if (blockQ) {
         if (it.block.indexOf(blockQ) >= 0) score += 100;
         else return;
@@ -833,17 +1039,29 @@
           var ns = numberScore(tok, it.nums);
           if (ns) score += ns;
           else if (it.block.indexOf(tok) >= 0) score += 40;
+          else if (new RegExp("(^|\\s)" + tok + "(\\s|$)").test(it.hay)) score += 12;  // "1848" in "Bulevardul 1848"
           else return;
         } else if (it.hay.indexOf(tok) >= 0 || (tok.length >= 5 && it.hay.indexOf(tok.slice(0, -1)) >= 0)) {
           score += 10 + (new RegExp("(^|\\s)" + tok.replace(/[^a-z0-9]/g, "")).test(it.hay) ? 5 : 0);
+          if (it.poi) {
+            var kw = it.kindW[tok] || (tok.length >= 5 && it.kindW[tok.slice(0, -1)]);
+            if (kw === 9) score += 16;          // "hospital" -> hospitals before clinics
+            else if (kw) score += 10;           // "farmacie" -> pharmacies before a university with Farmacie in its name
+            else if (it.name.indexOf(tok) >= 0) score += 8;  // the place's own name
+          }
+        } else if (it.poi && at >= 0) {
+          score += 30;  // matched as a whole name only ("mcdonalds")
         } else return;
       }
       if (it.street) score += 8;  // a bare street name should land on the street itself
       if (it.f.properties.kind === "apartments") score += 3;
       out.push({ it: it, s: score });
     });
+    // same score: nearest first (a chain like Profi lists the closest shop on top)
+    out.forEach(function (o) { o.d = o.it.poi ? poiDistance(o.it.f) : 0; });
     out.sort(function (a, b) {
-      return b.s - a.s || String(a.it.f.properties.street || a.it.f.properties.label || "").localeCompare(String(b.it.f.properties.street || ""), "ro") ||
+      return b.s - a.s || a.d - b.d ||
+        String(a.it.f.properties.street || a.it.f.properties.label || "").localeCompare(String(b.it.f.properties.street || ""), "ro") ||
         String(a.it.f.properties.label).localeCompare(String(b.it.f.properties.label), "ro", { numeric: true });
     });
     return out.slice(0, 40).map(function (o) { return o.it.f; });
@@ -862,6 +1080,11 @@
         if (p.kind === "street") {
           return '<li data-i="' + i + '" tabindex="0"><span class="r-num street">' + esc(t("chip.street")) + '</span><span class="r-main">' +
             esc(p.label) + '</span><span class="r-sub">' + esc(t("search.streetSub")) + "</span></li>";
+        }
+        if (p.kind === "poi") {
+          var g = poiGroup(p), sub2 = [catLabel(g), poiAddress(p), loc.pos || map.getZoom() >= 13 ? fmtDist(poiDistance(f)) : ""].filter(Boolean).join(" · ");
+          return '<li data-i="' + i + '" tabindex="0"><span class="r-num poi g-' + g + '">' + poiIcon(g) + '</span><span class="r-main">' +
+            esc(p.n) + '</span><span class="r-sub">' + esc(sub2) + "</span></li>";
         }
         var kind = p.kind === "apartments" ? t("chip.block") : p.kind === "override" ? t("chip.own") : t(p.kind === "address" ? "chip.address" : "chip.building");
         var sub = [kind, p.entrances.length ? p.entrances.join(", ") : "", p.name || ""].filter(Boolean).join(" · ");
@@ -896,6 +1119,12 @@
     resEl.hidden = true; qEl.blur();
     var p = f.properties, ll;
     if (p.kind === "street") { showStreet(f); return; }
+    if (p.kind === "poi") {
+      var c0 = f.geometry.coordinates;
+      map.setView([c0[1], c0[0]], Math.max(map.getZoom(), 18));
+      setTimeout(function () { openPoi(f); }, 300);
+      return;
+    }
     if (f.geometry.type === "Point") {
       ll = L.latLng(p.lp); map.setView(ll, 18);
     } else {

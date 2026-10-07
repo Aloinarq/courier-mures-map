@@ -36,7 +36,7 @@ lat,lon,label,type,street,note
 |---|---|
 | `lat`, `lon` | koordináta (tizedesponttal) |
 | `label` | blokknál pl. `Bl. 14` vagy `14A`; lépcsőháznál elég `A` (így jelenik meg: `Sc. A`) |
-| `type` | `block` vagy `entrance` |
+| `type` | `block`, `entrance` vagy `place` (névvel kereshető hely, pl. egy bolt, ami hiányzik az OSM-ből) |
 | `street` | utca (nem kötelező) |
 | `note` | megjegyzés, megjelenik az épület kártyáján (nem kötelező) |
 
@@ -44,6 +44,7 @@ lat,lon,label,type,street,note
 
 **Hogyan érvényesül:**
 - `block`: ha a pont egy épület körvonalán belül van, annak az épületnek a felirata lecserélődik (lila keret jelzi). Ha nincs ott épület, új lila pont kerül a térképre.
+- `place`: új, névvel kereshető hely jön létre (pl. `LAT,LON,Bolt neve,place,Utca,` – a koordinátát a térképről másold), és navigálni is lehet hozzá.
 - `entrance`: ha 8 méteren belül van egy OSM-bejárat, annak a felirata cserélődik. Ha nincs, új bejárat jön létre, és a legközelebbi (50 m-en belüli) épülethez kapcsolódik.
 - A `#`-tel kezdődő sorokat a program kihagyja.
 - Mentés után elég frissíteni az oldalt, a `fetch_data.py`-t nem kell újra futtatni.
@@ -101,6 +102,7 @@ A szövegek a `lang/` mappában vannak: `en.js`, `hu.js`, `ro.js`. Mindhárom f�
 - `fetch_data.py`: OSM-letöltés (Overpass API) és feldolgozás
 - `index.html`, `app.js`, `style.css`: a térkép
 - `config.js`: a TomTom forgalmi kulcs helye (élő forgalom)
+- `data/pois.geojson`: névvel kereshető helyek (boltok, éttermek, gyógyszertárak, iskolák…), OSM-ből
 - `route.js`: offline útvonaltervező (A* a saját utcahálózaton)
 - `lang/`: angol, magyar, román szövegek
 - `sw.js`, `manifest.webmanifest`: offline mód / telepíthető app
