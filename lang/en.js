@@ -127,5 +127,11 @@
   "nb.stairs": "Staircases",
   "nb.title": "By neighbourhood",
 
-  "info.footer": "OSM data as of {ts}. Data: © OpenStreetMap contributors (ODbL). If a block has no number, add it to data/overrides.csv or map it directly in OpenStreetMap."
+  "info.footer": "OSM data as of {ts}. Data: © OpenStreetMap contributors (ODbL). If a block has no number, add it to data/overrides.csv or map it directly in OpenStreetMap.",
+  "traffic.title": "Live traffic",
+  "traffic.note": "From TomTom, refreshed every 3 minutes. Shows only roads that are slower than usual. Needs internet.",
+  "traffic.fail": "Live traffic isn't loading right now – check your connection.",
+  "legend.trafficSlow": "Traffic: slower than usual",
+  "legend.trafficJam": "Traffic: heavy",
+  "legend.trafficStop": "Traffic: standing still"
 };

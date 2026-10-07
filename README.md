@@ -78,6 +78,18 @@ Frissítés: `python3 fetch_data.py`, aztán commit + push a `main`-re. A telefo
 - Az utcák, utcanevek, blokkok, házszámok, lépcsőházak és az útvonaltervezés **letöltés nélkül is működnek offline** (az első megnyitás után).
 - A **Háttértérkép** (Beállítások) az OpenStreetMap saját csempéit mutatja: ingyenes, kulcs nélküli, de internet kell hozzá, és a szabályzatuk tiltja a tömeges letöltést. Ezért csak a megnézett csempék mentődnek el.
 
+## Élő forgalom (TomTom)
+
+A Beállításokban bekapcsolható **Élő forgalom** a TomTom Traffic Flow csempéit teszi a térképre: csak ott látszik szín, ahol a forgalom lassabb a szokásosnál (narancs → piros → sötétpiros). 3 percenként frissül, internet kell hozzá.
+
+Beállítás egyszer:
+
+1. Regisztrálj ingyen: <https://developer.tomtom.com> (bankkártya nem kell). Az ingyenes csomag napi 50 000 csempekérést ad; ha elfogy, aznapra leáll, nem számláz.
+2. A Dashboardon hozz létre egy API kulcsot (**API & SDK keys**). A kulcsnál kapcsold be a **Domain whitelisting**-et, és add meg: `aloinarq.github.io` (helyi teszthez: `localhost`). Termékként elég a **Traffic API**.
+3. Írd be a kulcsot a `config.js` fájlba: `tomtomKey: "IDE_A_KULCS"`, majd commit + push.
+
+A kulcs látszik az oldal forrásában – térképkulcsoknál ez így szokás –, de a domain-korlátozás miatt más weboldal nem tudja használni. Kulcs nélkül a forgalom kapcsoló egyszerűen nem jelenik meg.
+
 ## Nyelvek
 
 Az app angolul (alapértelmezett), magyarul és románul érhető el. A nyelv a Beállításokban (rétegek gomb) választható, és a telefon megjegyzi.
@@ -88,6 +100,7 @@ A szövegek a `lang/` mappában vannak: `en.js`, `hu.js`, `ro.js`. Mindhárom f�
 
 - `fetch_data.py`: OSM-letöltés (Overpass API) és feldolgozás
 - `index.html`, `app.js`, `style.css`: a térkép
+- `config.js`: a TomTom forgalmi kulcs helye (élő forgalom)
 - `route.js`: offline útvonaltervező (A* a saját utcahálózaton)
 - `lang/`: angol, magyar, román szövegek
 - `sw.js`, `manifest.webmanifest`: offline mód / telepíthető app

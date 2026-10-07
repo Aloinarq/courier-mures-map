@@ -1,12 +1,12 @@
 /* Service worker: the app, its data and fonts work offline; OpenStreetMap tiles are cached only as you view them
    (their usage policy forbids bulk downloading). */
-var VERSION = "v8";
+var VERSION = "v9";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-osm-v1";
 var MAX_TILES = 3000;                 // roughly 50 MB of viewed tiles
 var TILE_MAX_AGE = 7 * 24 * 3600e3;   // refresh a viewed tile after a week (OSM tile policy)
 var SHELL_FILES = [
-  "./", "index.html", "app.js", "route.js", "style.css", "manifest.webmanifest",
+  "./", "index.html", "config.js", "app.js", "route.js", "style.css", "manifest.webmanifest",
   "lang/en.js", "lang/hu.js", "lang/ro.js",
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
   "fonts/google-sans-latin-wght-normal.woff2", "fonts/google-sans-latin-ext-wght-normal.woff2",
