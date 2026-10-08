@@ -101,6 +101,8 @@
   "settings.offline.no": "Doar pe site-ul publicat (https)",
   "settings.offline.ok": "Pregătit",
   "settings.offline.pending": "Se pregătește…",
+  "settings.version": "Versiune",
+  "update.ready": "O versiune nouă e gata – se încarcă la următoarea deschidere a hărții.",
   "settings.title": "Setări",
 
   "legend.apartments": "Bloc de locuințe (building=apartments)",

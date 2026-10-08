@@ -101,6 +101,8 @@
   "settings.offline.no": "Csak a közzétett (https) oldalon",
   "settings.offline.ok": "Kész",
   "settings.offline.pending": "Előkészítés…",
+  "settings.version": "Verzió",
+  "update.ready": "Új verzió érhető el – a térkép következő megnyitásakor töltődik be.",
   "settings.title": "Beállítások",
 
   "legend.apartments": "Tömbház (building=apartments)",

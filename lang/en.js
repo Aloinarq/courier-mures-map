@@ -101,6 +101,8 @@
   "settings.offline.no": "Only on the published site (https)",
   "settings.offline.ok": "Ready",
   "settings.offline.pending": "Getting ready…",
+  "settings.version": "Version",
+  "update.ready": "A new version is ready – it loads next time you open the map.",
   "settings.title": "Settings",
 
   "legend.apartments": "Apartment block (building=apartments)",
