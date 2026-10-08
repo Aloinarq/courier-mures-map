@@ -1,6 +1,6 @@
 /* Service worker: the app, its data and fonts work offline; OpenStreetMap tiles are cached only as you view them
    (their usage policy forbids bulk downloading). */
-var VERSION = "v15";
+var VERSION = "v16";
 var SHELL = "shell-" + VERSION;
 var TILES = "tiles-osm-v1";
 var MAX_TILES = 3000;                 // roughly 50 MB of viewed tiles

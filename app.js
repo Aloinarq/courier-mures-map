@@ -12,6 +12,7 @@
   var OSM_ATTRIB = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
   var PREF = { basemap: "blokk.basemap", mode: "blokk.mode", locIntro: "blokk.locIntro", traffic: "blokk.traffic" };
   var CONFIG = window.BLOKK_CONFIG || {};
+  var APP_VERSION = "16";  // shown in Settings; keep equal to VERSION in sw.js
   function readPref(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function writePref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
 
@@ -2160,6 +2161,7 @@
           '<span class="switch"><input type="checkbox" id="set-bm" data-change="basemap"' + (map.hasLayer(tiles) ? " checked" : "") + "><span></span></span></div>" +
           '<div class="set-row"><span><b>' + esc(t("settings.offline")) + '</b></span><span class="status' + (off === "ok" ? " ok" : "") + '">' +
           esc(t("settings.offline." + off)) + "</span></div>" +
+          '<div class="set-row"><span><b>' + esc(t("settings.version")) + '</b></span><span class="status">v' + APP_VERSION + "</span></div>" +
           '<details class="more"><summary>' + esc(t("settings.legend")) + '</summary><div class="legend">' +
           sw("background:#3b82f6;opacity:.6;border:1px solid #1d4ed8", "legend.apartments") +
           sw("background:#9ca3af;opacity:.6;border:1px solid #6b7280", "legend.other") +
@@ -2211,9 +2213,26 @@
   }
 
   // ------------------------------------------------------------------ service worker
+  // A new version installs in the background. When it takes over, load it straight away – unless a route
+  // is open, then it waits for the next start. Phones keep a home-screen app open for days, so look for
+  // a new version every time the app comes back to the front.
   if ("serviceWorker" in navigator && window.isSecureContext) {
+    var hadController = !!navigator.serviceWorker.controller, reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", function () {
+      if (!hadController || reloading) return;  // the very first install: nothing old is running
+      if (nav.active || route.dest) { toast(t("update.ready"), 6000); return; }
+      reloading = true;
+      location.reload();
+    });
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js").catch(function (e) { console.warn("SW registration failed", e); });
+      navigator.serviceWorker.register("sw.js").then(function (reg) {
+        var last = Date.now();
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState !== "visible" || Date.now() - last < 60000) return;
+          last = Date.now();
+          reg.update().catch(function () { /* offline */ });
+        });
+      }).catch(function (e) { console.warn("SW registration failed", e); });
     });
   }
 
