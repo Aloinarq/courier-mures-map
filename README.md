@@ -84,10 +84,12 @@ Frissítés: `python3 fetch_data.py`, aztán commit + push a `main`-re. A telefo
 
 A Beállításokban bekapcsolható **Élő forgalom** a TomTom Traffic Flow csempéit teszi a térképre: csak ott látszik szín, ahol a forgalom lassabb a szokásosnál (narancs → piros → sötétpiros). 3 percenként frissül, internet kell hozzá.
 
+Autós útvonalnál a menetidő is forgalommal számol: a saját útvonalunkat elküldjük a TomTom Routing API-nak (támpontokként, így ugyanazt az utat méri), és az élő + szokásos forgalommal kapott időt mutatjuk, színezve (zöld / narancs / piros, „+N perc a forgalom miatt”). Navigálás közben 3 percenként újrakérdezi a hátralévő szakaszra. Az eredményt csak megjelenítjük, nem mentjük; ha a TomTom nem válaszol, a saját becslésünk marad. Kerékpárral és gyalog a saját becslés érvényes.
+
 Beállítás egyszer:
 
 1. Regisztrálj ingyen: <https://developer.tomtom.com> (bankkártya nem kell). Az ingyenes csomag napi 50 000 csempekérést ad; ha elfogy, aznapra leáll, nem számláz.
-2. A Dashboardon hozz létre egy API kulcsot (**API & SDK keys**). A kulcsnál kapcsold be a **Domain whitelisting**-et, és add meg: `aloinarq.github.io` (helyi teszthez: `localhost`). Termékként elég a **Traffic API**.
+2. A Dashboardon hozz létre egy API kulcsot (**API & SDK keys**). A kulcsnál kapcsold be a **Domain whitelisting**-et, és add meg: `aloinarq.github.io` (helyi teszthez: `localhost`). Termékként kell a **Traffic API** (forgalmi színek), a **Routing API** (menetidő forgalommal) és a **Search API** (OSM-ben hiányzó helyek keresése).
 3. Írd be a kulcsot a `config.js` fájlba: `tomtomKey: "IDE_A_KULCS"`, majd commit + push.
 
 A kulcs látszik az oldal forrásában – térképkulcsoknál ez így szokás –, de a domain-korlátozás miatt más weboldal nem tudja használni. Kulcs nélkül a forgalom kapcsoló egyszerűen nem jelenik meg.

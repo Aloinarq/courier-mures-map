@@ -1832,6 +1832,7 @@
       route.cum = [0];
       for (var i = 1; i < res.coords.length; i++) route.cum.push(route.cum[i - 1] + BlokkRouter.dist(res.coords[i - 1], res.coords[i]));
     }
+    if (res) startEta(res.coords, res.distance);
     if (nav.active) { nav.seg = 0; nav.off = 0; updateNav(); return; }  // a reroute: carry on along the new line
     drawRoute();
     if (!res) { openSheet(noRouteSpec()); return; }
@@ -1842,6 +1843,84 @@
       });
     });
   }
+  // ---------- live-traffic arrival times (car). TomTom's Routing API times *our* route: it is sent as
+  // supporting points, so TomTom rebuilds the same line and returns its travel time with live and usual
+  // traffic. Shown only, never stored; when it can't answer, our own estimate stays. While navigating it is
+  // asked again every few minutes for the rest of the way.
+  var ETA_REFRESH_MS = 3 * 60 * 1000;
+  function trafficEta() { return !!CONFIG.tomtomKey && route.mode === "car" && trafficOn() && navigator.onLine !== false; }
+  // route.eta: the time (secs) for the last `dist` metres of the route; the rest scales with the distance left
+  function startEta(coords, dist) {
+    route.eta = { secs: route.res.duration, dist: dist, state: null, asked: 0, seq: (route.eta ? route.eta.seq : 0) + 1 };
+    if (trafficEta()) askEta(coords, dist);
+  }
+  function etaFor(left) {
+    var e = route.eta;
+    return e && e.dist ? e.secs * Math.min(1, left / e.dist) : route.res.duration;
+  }
+  function supportPoints(coords) {  // about one point every 40 m (at most ~250), always the first and the last
+    var total = 0, i;
+    for (i = 1; i < coords.length; i++) total += BlokkRouter.dist(coords[i - 1], coords[i]);
+    var step = Math.max(40, total / 250), out = [coords[0]], acc = 0;
+    for (i = 1; i < coords.length - 1; i++) {
+      acc += BlokkRouter.dist(coords[i - 1], coords[i]);
+      if (acc >= step) { out.push(coords[i]); acc = 0; }
+    }
+    out.push(coords[coords.length - 1]);
+    return out.map(function (c) { return { latitude: +c[0].toFixed(6), longitude: +c[1].toFixed(6) }; });
+  }
+  function askEta(coords, dist) {
+    var e = route.eta, seq = e.seq, res = route.res;
+    if (coords.length < 2) return;
+    e.asked = Date.now(); e.busy = true;
+    if (!e.state) e.state = "loading";
+    var a = coords[0], b = coords[coords.length - 1], ll = function (c) { return c[0].toFixed(6) + "," + c[1].toFixed(6); };
+    var url = "https://api.tomtom.com/routing/1/calculateRoute/" + ll(a) + ":" + ll(b) + "/json?key=" + encodeURIComponent(CONFIG.tomtomKey) +
+      "&traffic=true&travelMode=car&routeType=fastest&departAt=now&computeTravelTimeFor=all&routeRepresentation=summaryOnly";
+    fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ supportingPoints: supportPoints(coords) }) })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      }).then(function (j) {
+        var sm = j.routes && j.routes[0] && j.routes[0].summary;
+        if (!sm || !(sm.travelTimeInSeconds > 0)) throw new Error("no time");
+        // only trust it for our line: a clearly different length means TomTom drove another way
+        if (Math.abs(sm.lengthInMeters - dist) > Math.max(150, 0.15 * dist)) throw new Error("other route " + sm.lengthInMeters + " m");
+        if (route.res !== res || route.eta.seq !== seq) return;
+        var free = sm.noTrafficTravelTimeInSeconds || sm.travelTimeInSeconds;
+        route.eta = { secs: sm.travelTimeInSeconds, dist: dist, state: "ok", asked: e.asked, seq: seq,
+          delay: Math.max(0, sm.travelTimeInSeconds - free), free: free };
+        etaChanged();
+      }).catch(function (err) {
+        console.warn("traffic ETA:", err.message);
+        if (route.res !== res || route.eta.seq !== seq) return;
+        route.eta.busy = false;
+        if (route.eta.state !== "ok") { route.eta.state = "fail"; etaChanged(); }  // an older live time is better than none
+      });
+  }
+  function etaChanged() {
+    if (nav.active) updateNav();
+    else if (sheetSpec && sheetSpec.kind === "route") renderSheet();
+  }
+  // how bad the traffic is on the way: "ok" (no real delay), "slow", "jam"; null when we don't know
+  function etaLevel() {
+    var e = route.eta;
+    if (!e || e.state !== "ok") return null;
+    if (e.delay < 60) return "ok";
+    return e.delay / e.free < 0.25 ? "slow" : "jam";
+  }
+  function etaLine() {
+    var e = route.eta, lv = etaLevel();
+    if (!e || !e.state) return "";
+    if (e.state === "loading") return '<p class="tr-eta wait">' + esc(t("eta.checking")) + "</p>";
+    if (e.state === "fail") return '<p class="tr-eta wait">' + esc(t("eta.fail")) + "</p>";
+    return '<p class="tr-eta ' + lv + '">' + esc(lv === "ok" ? t("eta.clear") : t("eta.delay", { n: Math.round(e.delay / 60) })) + "</p>";
+  }
+  function bigTime(secs) {
+    var d = fmtDur(secs), lv = etaLevel();
+    return '<span class="big' + (lv ? " tr-" + lv : "") + '">' + d.n + "<small>" + esc(d.u) + "</small></span>";
+  }
+
   function drawRoute(fromSeg, fromPt) {
     var pts = route.res ? route.res.coords : [];
     if (fromSeg != null) pts = [fromPt].concat(pts.slice(fromSeg + 1));
@@ -1890,11 +1969,11 @@
     return {
       kind: "route",
       html: function () {
-        var r = route.res, d = fmtDur(r.duration);
+        var r = route.res, secs = etaFor(r.distance);
         var steps = r.steps.filter(function (s) { return s.type !== "depart"; });
         return modesHtml() +
-          '<div class="summary"><span class="big">' + d.n + "<small>" + esc(d.u) + '</small></span><span class="rest"><b>' + esc(fmtDist(r.distance)) +
-          "</b> · " + esc(t("route.arrive", { time: fmtClock(r.duration) })) + "</span></div>" + destLine() +
+          '<div class="summary">' + bigTime(secs) + '<span class="rest"><b>' + esc(fmtDist(r.distance)) +
+          "</b> · " + esc(t("route.arrive", { time: fmtClock(secs) })) + "</span></div>" + etaLine() + destLine() +
           '<div class="actions"><button class="btn go" data-act="start">' + ICON.go + esc(t("route.start")) + "</button>" +
           '<a class="btn ghost" href="' + gmapsUrl(route.dest.at) + '" target="_blank" rel="noopener" aria-label="' + esc(t("place.mapsAria")) + '">' + ICON.ext + "Maps</a></div>" +
           '<details class="more"><summary>' + esc(t("route.steps", { n: steps.length })) + '</summary><ol class="steps">' +
@@ -1994,10 +2073,10 @@
     return {
       kind: "nav",
       html: function () {
-        var d = fmtDur(nav.leftTime || route.res.duration);
-        return '<div class="navstrip"><div class="summary"><span class="big">' + d.n + "<small>" + esc(d.u) + '</small></span><span class="rest"><b>' +
-          esc(fmtDist(nav.left || route.res.distance)) + "</b> · " + esc(t("route.arrive", { time: fmtClock(nav.leftTime || route.res.duration) })) +
-          '</span></div><button class="btn ghost" data-act="end">' + esc(t("route.end")) + "</button></div>" + destLine();
+        var secs = nav.leftTime || etaFor(route.res.distance);
+        return '<div class="navstrip"><div class="summary">' + bigTime(secs) + '<span class="rest"><b>' +
+          esc(fmtDist(nav.left || route.res.distance)) + "</b> · " + esc(t("route.arrive", { time: fmtClock(secs) })) +
+          '</span></div><button class="btn ghost" data-act="end">' + esc(t("route.end")) + "</button></div>" + etaLine() + destLine();
       },
       acts: { end: function () { endNav(false); } },
       closeAct: function () { endNav(false); },
@@ -2050,7 +2129,11 @@
     if (then) setHtml("nav-then", esc(t("route.then")) + " " + turnSvg(after) + " " + esc(stepVerb(after)));
     if (thenEl.hidden !== !then) { thenEl.hidden = !then; measureUi(); }
     nav.left = left;
-    nav.leftTime = route.res.duration * left / total;
+    nav.leftTime = etaFor(left);
+    var e = route.eta;
+    if (e && !e.busy && trafficEta() && Date.now() - e.asked > ETA_REFRESH_MS && left > 300) {
+      askEta([pr.at].concat(cc.slice(pr.seg + 1)), left);
+    }
     if (sheetSpec && sheetSpec.kind === "nav") renderSheet();
     drawRoute(pr.seg, pr.at);
   }

@@ -129,8 +129,12 @@
 
   "info.footer": "OSM adatok állapota: {ts}. Adatok: © OpenStreetMap közreműködők (ODbL). Ha egy blokkon hiányzik a szám, írd be a data/overrides.csv fájlba, vagy pótold közvetlenül az OpenStreetMapen.",
   "traffic.title": "Élő forgalom",
-  "traffic.note": "TomTom-adat, 3 percenként frissül. Csak ott látszik, ahol a szokásosnál lassabb a forgalom. Internet kell hozzá.",
+  "traffic.note": "TomTom-adat, 3 percenként frissül. Színezi a szokásosnál lassabb utakat, és autóval a menetidőbe is beszámítja a késést. Internet kell hozzá.",
   "traffic.fail": "Az élő forgalom most nem tölt be – ellenőrizd a kapcsolatot.",
+  "eta.checking": "Élő forgalom ellenőrzése…",
+  "eta.clear": "Nincs forgalmi késés · élő TomTom-adat",
+  "eta.delay": "+{n} perc a forgalom miatt · élő TomTom-adat",
+  "eta.fail": "Az élő forgalom nem érhető el – idő forgalom nélkül",
   "legend.trafficSlow": "Forgalom: lassabb a szokásosnál",
   "legend.trafficJam": "Forgalom: torlódás",
   "legend.trafficStop": "Forgalom: áll",

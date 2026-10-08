@@ -129,8 +129,12 @@
 
   "info.footer": "Datele OSM din {ts}. Date: © contribuitorii OpenStreetMap (ODbL). Dacă un bloc nu are număr, adaugă-l în data/overrides.csv sau direct în OpenStreetMap.",
   "traffic.title": "Trafic în timp real",
-  "traffic.note": "Date TomTom, actualizate la fiecare 3 minute. Apare doar unde traficul e mai lent decât de obicei. Necesită internet.",
+  "traffic.note": "Date TomTom, actualizate la fiecare 3 minute. Colorează drumurile mai lente decât de obicei și adaugă întârzierea la timpul cu mașina. Necesită internet.",
   "traffic.fail": "Traficul în timp real nu se încarcă acum – verifică conexiunea.",
+  "eta.checking": "Se verifică traficul în timp real…",
+  "eta.clear": "Fără întârzieri din trafic · live de la TomTom",
+  "eta.delay": "+{n} min din cauza traficului · live de la TomTom",
+  "eta.fail": "Traficul live nu e disponibil – timp fără trafic",
   "legend.trafficSlow": "Trafic: mai lent decât de obicei",
   "legend.trafficJam": "Trafic: aglomerat",
   "legend.trafficStop": "Trafic: blocat",

@@ -129,8 +129,12 @@
 
   "info.footer": "OSM data as of {ts}. Data: © OpenStreetMap contributors (ODbL). If a block has no number, add it to data/overrides.csv or map it directly in OpenStreetMap.",
   "traffic.title": "Live traffic",
-  "traffic.note": "From TomTom, refreshed every 3 minutes. Shows only roads that are slower than usual. Needs internet.",
+  "traffic.note": "From TomTom, refreshed every 3 minutes. Colours roads that are slower than usual and adds the delay to driving times. Needs internet.",
   "traffic.fail": "Live traffic isn't loading right now – check your connection.",
+  "eta.checking": "Checking live traffic…",
+  "eta.clear": "No traffic delays · live from TomTom",
+  "eta.delay": "+{n} min because of traffic · live from TomTom",
+  "eta.fail": "Live traffic unavailable – time without traffic",
   "legend.trafficSlow": "Traffic: slower than usual",
   "legend.trafficJam": "Traffic: heavy",
   "legend.trafficStop": "Traffic: standing still",

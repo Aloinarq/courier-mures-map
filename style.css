@@ -268,3 +268,14 @@ body.navigating #toast { top: calc(150px + var(--safe-top)); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* live-traffic driving time: the time turns green / amber / red like the traffic on the map */
+.summary .big.tr-ok { color: var(--ok); }
+.summary .big.tr-slow { color: #c46a00; }
+.summary .big.tr-jam { color: #c81e1e; }
+.tr-eta { display: flex; align-items: center; gap: 7px; margin: 6px 0 0; font-size: 14px; font-weight: 500; color: var(--muted); }
+.tr-eta::before { content: ""; flex: none; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.tr-eta.ok { color: var(--ok); }
+.tr-eta.slow { color: #c46a00; }
+.tr-eta.jam { color: #c81e1e; }
+.tr-eta.wait::before { background: var(--rule); }
