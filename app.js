@@ -10,9 +10,9 @@
   // tiles are only cached as they are viewed (sw.js); our own street layer works without them.
   var TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   var OSM_ATTRIB = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
-  var PREF = { basemap: "blokk.basemap", mode: "blokk.mode", locIntro: "blokk.locIntro", traffic: "blokk.traffic" };
+  var PREF = { basemap: "blokk.basemap", mode: "blokk.mode", locIntro: "blokk.locIntro", traffic: "blokk.traffic", nav: "blokk.nav" };
   var CONFIG = window.BLOKK_CONFIG || {};
-  var APP_VERSION = "16";  // shown in Settings; keep equal to VERSION in sw.js
+  var APP_VERSION = "17";  // shown in Settings; keep equal to VERSION in sw.js
   function readPref(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function writePref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
 
@@ -256,6 +256,9 @@
   var baseLayer = new DataCanvas({ pane: "roads", padding: 0.5, draw: function (ctx, b) { drawBase(ctx, b); } }).addTo(map);
   var bldLayer = new DataCanvas({ pane: "overlayPane", padding: 0.5, draw: function (ctx, b) { drawBuildings(ctx, b); } }).addTo(map);
   var labelsLayer = new DataCanvas({ pane: "labels", padding: 0.15, lazy: false, draw: function (ctx, b) { drawLabels(ctx, b); } }).addTo(map);
+  // the route line: repainted in full on every GPS fix and every move. Leaflet's own canvas repaints only the
+  // changed part, which phones could leave stale – showing an old route that no longer matched the directions.
+  var routeLayer = new DataCanvas({ pane: "route", padding: 0.5, lazy: false, draw: function (ctx) { drawRouteLine(ctx); } }).addTo(map);
 
   // ---------- optional background tiles
   var tiles = L.tileLayer(TILE_URL, { maxZoom: 19, maxNativeZoom: 19, crossOrigin: true });
@@ -671,6 +674,7 @@
       entrances: entrances.length, overrides: overrideCount,
     });
     if (overrideCount) toast(t("toast.overrides", { n: overrideCount }));
+    offerResume();
   }
   function drawBuildings(ctx, b) {
     if (!bldLoaded) return;
@@ -697,11 +701,11 @@
       ctx.beginPath();
       dots.forEach(function (d) {
         if (d.ovr !== ovr) return;
-        var x = d.x * v.S - v.ox, y = d.y * v.S - v.oy, r = ovr ? 6 : 4;
+        var x = d.x * v.S - v.ox, y = d.y * v.S - v.oy, r = ovr ? 6 : z >= 17 ? 4 : z === 16 ? 2.6 : 1.8;
         ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, 2 * Math.PI);
       });
       ctx.globalAlpha = 0.9; ctx.fillStyle = ovr ? "#a78bfa" : "#d1d5db"; ctx.fill();
-      ctx.globalAlpha = 1; ctx.lineWidth = 1.5; ctx.strokeStyle = ovr ? "#6d28d9" : "#4b5563"; ctx.stroke();
+      ctx.globalAlpha = 1; ctx.lineWidth = z >= 17 || ovr ? 1.5 : 1; ctx.strokeStyle = ovr ? "#6d28d9" : z >= 17 ? "#4b5563" : "#9aa1ad"; ctx.stroke();
     });
   }
 
@@ -1546,7 +1550,7 @@
     else if (prev && now - loc.last > 300 && now - loc.last < 10000) loc.speed = moved / ((now - loc.last) / 1000);
     if (c.heading != null && !isNaN(c.heading) && (loc.speed || 0) > 0.8) loc.heading = c.heading;
     else if (prev && moved > 6 && c.accuracy < 30) loc.heading = BlokkRouter.bearing(prev, ll);
-    loc.pos = ll; loc.shown = ll; loc.acc = c.accuracy || 0; loc.last = now; loc.denied = false;
+    loc.pos = ll; loc.shown = ll; loc.acc = c.accuracy || 0; loc.last = now; loc.denied = false; loc.lostSaid = false;
     flushWaiting(false);
     if (nav.active) updateNav();  // snaps the shown position onto the route
     drawMe();
@@ -1562,6 +1566,8 @@
     } else if (!loc.pos) {
       toast(t("loc.unavailable"), 6000);
       flushWaiting(true);  // a waiting route request falls back to the Google Maps card
+    } else if (locQuiet() > 8000 && Date.now() - (loc.restarted || 0) > 15000) {
+      restartWatch();  // a timeout mid-trip: some phones stop the watch after one
     }
   }
   function drawMe() {
@@ -1590,9 +1596,25 @@
       el.querySelector(".me-arrow").style.transform = "rotate(" + heading.toFixed(1) + "deg)";
     }
   }
-  setInterval(function () {  // grey the dot when the phone stops reporting
-    if (loc.marker && Date.now() - loc.last > 30000 && loc.marker.getElement()) loc.marker.getElement().classList.add("stale");
-  }, 10000);
+  // A phone can stop sending positions without any error (weak signal, or after the browser was in the
+  // background). Grey the dot / arrow, say so while navigating, and restart the location watch.
+  function locQuiet() { return Date.now() - loc.last; }
+  setInterval(function () {
+    if (loc.watchId === null || !loc.pos || document.visibilityState !== "visible") return;
+    var quiet = locQuiet(), el = loc.marker && loc.marker.getElement();
+    if (quiet > (nav.active ? 8000 : 30000)) {
+      if (el) el.classList.add("stale");
+      if (nav.active && !loc.lostSaid) { loc.lostSaid = true; toast(t("loc.lost"), 6000); }
+    }
+    if (quiet > (nav.active ? 12000 : 30000) && Date.now() - (loc.restarted || 0) > 15000) restartWatch();
+  }, 2000);
+  function restartWatch() {
+    loc.restarted = Date.now();
+    restartLocation(loc.follow);
+  }
+  document.addEventListener("visibilitychange", function () {  // back from the background: make sure positions flow
+    if (document.visibilityState === "visible" && loc.watchId !== null && locQuiet() > 5000) restartWatch();
+  });
   // ---------- camera: keeps the dot in view like a navigation app
   // Navigating: the dot sits low in the free part of the screen, opposite the direction of travel, so more
   // road ahead is visible; zoom follows speed. Otherwise: just keep the dot centred.
@@ -1601,7 +1623,7 @@
     var v = loc.speed || 0;                      // m/s
     return v > 14 ? 16 : v > 5 ? 17 : 18;        // > 50 km/h, > 18 km/h, slower
   }
-  var MAP_EL = map.getContainer(), RENDERERS = [baseLayer, bldLayer, labelsLayer, routeCanvas];
+  var MAP_EL = map.getContainer(), RENDERERS = [baseLayer, bldLayer, labelsLayer, routeLayer, routeCanvas];
   function enterRotation() {
     if (rot.on) return;
     // the visible map strip lies between the turn banner and the sheet; the user sits low in it
@@ -1836,7 +1858,8 @@
     if (res) startEta(res.coords, res.distance);
     if (nav.active) { nav.seg = 0; nav.off = 0; updateNav(); return; }  // a reroute: carry on along the new line
     drawRoute();
-    if (!res) { openSheet(noRouteSpec()); return; }
+    if (!res) { route.autoStart = false; openSheet(noRouteSpec()); return; }
+    if (route.autoStart) { route.autoStart = false; startNav(); return; }
     if (sheetSpec && sheetSpec.kind === "route") renderSheet(); else openSheet(routeSpec());
     if (fit) requestAnimationFrame(function () {
       map.fitBounds(L.latLngBounds(res.coords.concat([loc.pos])), {
@@ -1870,6 +1893,14 @@
     out.push(coords[coords.length - 1]);
     return out.map(function (c) { return { latitude: +c[0].toFixed(6), longitude: +c[1].toFixed(6) }; });
   }
+  function ttSummary(r) {
+    if (!r.ok) throw new Error(String(r.status));
+    return r.json().then(function (j) {
+      var sm = j.routes && j.routes[0] && j.routes[0].summary;
+      if (!sm || !(sm.travelTimeInSeconds > 0)) throw new Error("no-time");
+      return sm;
+    });
+  }
   function askEta(coords, dist) {
     var e = route.eta, seq = e.seq, res = route.res;
     if (coords.length < 2) return;
@@ -1878,24 +1909,31 @@
     var a = coords[0], b = coords[coords.length - 1], ll = function (c) { return c[0].toFixed(6) + "," + c[1].toFixed(6); };
     var url = "https://api.tomtom.com/routing/1/calculateRoute/" + ll(a) + ":" + ll(b) + "/json?key=" + encodeURIComponent(CONFIG.tomtomKey) +
       "&traffic=true&travelMode=car&routeType=fastest&departAt=now&computeTravelTimeFor=all&routeRepresentation=summaryOnly";
+    var why = "";
+    // 1) TomTom times exactly our line (sent as supporting points)
     fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ supportingPoints: supportPoints(coords) }) })
-      .then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
-      }).then(function (j) {
-        var sm = j.routes && j.routes[0] && j.routes[0].summary;
-        if (!sm || !(sm.travelTimeInSeconds > 0)) throw new Error("no time");
+      .then(ttSummary).then(function (sm) {
         // only trust it for our line: a clearly different length means TomTom drove another way
-        if (Math.abs(sm.lengthInMeters - dist) > Math.max(150, 0.15 * dist)) throw new Error("other route " + sm.lengthInMeters + " m");
+        if (Math.abs(sm.lengthInMeters - dist) > Math.max(150, 0.15 * dist)) throw new Error("len");
+        return { secs: sm.travelTimeInSeconds, free: sm.noTrafficTravelTimeInSeconds || sm.travelTimeInSeconds };
+      }).catch(function (err) {
+        // 2) a plain request (never blocked by the browser): TomTom's own way between the same two points,
+        // its time scaled to our line's length – the traffic on the way is what matters
+        why = err.message === "Failed to fetch" || err.name === "TypeError" ? "net" : err.message;
+        return fetch(url).then(ttSummary).then(function (sm) {
+          if (!(sm.lengthInMeters > 0) || sm.lengthInMeters > 2.5 * dist || sm.lengthInMeters < 0.4 * dist) throw new Error("len2");
+          var k = dist / sm.lengthInMeters;
+          return { secs: sm.travelTimeInSeconds * k, free: (sm.noTrafficTravelTimeInSeconds || sm.travelTimeInSeconds) * k };
+        });
+      }).then(function (tt) {
         if (route.res !== res || route.eta.seq !== seq) return;
-        var free = sm.noTrafficTravelTimeInSeconds || sm.travelTimeInSeconds;
-        route.eta = { secs: sm.travelTimeInSeconds, dist: dist, state: "ok", asked: e.asked, seq: seq,
-          delay: Math.max(0, sm.travelTimeInSeconds - free), free: free };
+        route.eta = { secs: tt.secs, dist: dist, state: "ok", asked: e.asked, seq: seq, delay: Math.max(0, tt.secs - tt.free), free: tt.free };
         etaChanged();
       }).catch(function (err) {
-        console.warn("traffic ETA:", err.message);
+        var code = why + "/" + (err.name === "TypeError" ? "net" : err.message);
+        console.warn("traffic ETA:", code);
         if (route.res !== res || route.eta.seq !== seq) return;
-        route.eta.busy = false;
+        route.eta.busy = false; route.eta.why = code;
         if (route.eta.state !== "ok") { route.eta.state = "fail"; etaChanged(); }  // an older live time is better than none
       });
   }
@@ -1914,7 +1952,7 @@
     var e = route.eta, lv = etaLevel();
     if (!e || !e.state) return "";
     if (e.state === "loading") return '<p class="tr-eta wait">' + esc(t("eta.checking")) + "</p>";
-    if (e.state === "fail") return '<p class="tr-eta wait">' + esc(t("eta.fail")) + "</p>";
+    if (e.state === "fail") return '<p class="tr-eta wait">' + esc(t("eta.fail")) + (e.why ? ' <small class="why">' + esc(e.why) + "</small>" : "") + "</p>";
     return '<p class="tr-eta ' + lv + '">' + esc(lv === "ok" ? t("eta.clear") : t("eta.delay", { n: Math.round(e.delay / 60) })) + "</p>";
   }
   function bigTime(secs) {
@@ -1925,12 +1963,8 @@
   function drawRoute(fromSeg, fromPt) {
     var pts = route.res ? route.res.coords : [];
     if (fromSeg != null) pts = [fromPt].concat(pts.slice(fromSeg + 1));
-    if (!route.line) {
-      route.casing = L.polyline([], { renderer: routeCanvas, color: "#0c2454", weight: 11, opacity: 0.9, lineCap: "round", lineJoin: "round", interactive: false }).addTo(map);
-      route.line = L.polyline([], { renderer: routeCanvas, color: "#ff5f14", weight: 6.5, lineCap: "round", lineJoin: "round", interactive: false }).addTo(map);
-    }
-    route.casing.setLatLngs(pts);
-    route.line.setLatLngs(pts);
+    route.drawPts = pts;
+    routeLayer.redraw();
     if (route.pin && route.pin._dest !== route.dest) { map.removeLayer(route.pin); route.pin = null; }
     if (!route.pin && route.dest) {
       route.pin = L.marker(route.dest.at, {
@@ -1940,9 +1974,22 @@
       route.pin._dest = route.dest;
     }
   }
+  function drawRouteLine(ctx) {
+    var pts = route.drawPts;
+    if (!pts || pts.length < 2) return;
+    ctx.beginPath();
+    for (var i = 0; i < pts.length; i++) {
+      var p = map.latLngToLayerPoint(pts[i]);
+      if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y);
+    }
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.globalAlpha = 0.9; ctx.strokeStyle = "#0c2454"; ctx.lineWidth = 11; ctx.stroke();
+    ctx.globalAlpha = 1; ctx.strokeStyle = "#ff5f14"; ctx.lineWidth = 6.5; ctx.stroke();
+  }
   function clearRoute() {
-    [route.casing, route.line, route.pin].forEach(function (l) { if (l) map.removeLayer(l); });
-    route.casing = route.line = route.pin = null;
+    if (route.pin) map.removeLayer(route.pin);
+    route.pin = null; route.drawPts = null;
+    routeLayer.redraw();
     route.res = route.cum = null;
     route.dest = null;
   }
@@ -2053,6 +2100,34 @@
     drawMe();
     resumeFollow();
     requestWakeLock();
+    var d = route.dest;
+    writePref(PREF.nav, JSON.stringify({ at: d.at, title: d.title, street: d.street, plate: d.plate, mode: route.mode,
+      id: d.f && d.f.properties && d.f.properties.id || null, t: Date.now() }));
+  }
+  // the browser dropped the page mid-trip (phones do that to background tabs): offer to carry on
+  function offerResume() {
+    var s = null;
+    try { s = JSON.parse(readPref(PREF.nav) || "null"); } catch (e) { /* old or broken */ }
+    if (!s || !s.at || Date.now() - s.t > 3 * 3600e3 || nav.active || route.dest || (sheetSpec && sheetSpec.kind === "intro")) return;
+    var dest = { at: s.at, title: s.title, street: s.street, plate: s.plate, f: (s.id && byId[s.id]) || null };
+    openSheet({
+      kind: "resume",
+      html: function () {
+        return "<h2>" + esc(t("resume.title")) + "</h2>" + '<p class="to-line">' + esc(t("route.to")) + ": <b>" + esc(dest.title) + "</b>" +
+          (dest.street ? ", " + esc(dest.street) : "") + "</p>" +
+          '<div class="actions"><button class="btn go" data-act="go">' + ICON.go + esc(t("resume.go")) + "</button>" +
+          '<button class="btn quiet" data-act="no">' + esc(t("resume.no")) + "</button></div>";
+      },
+      acts: {
+        go: function () {
+          if (MODES.indexOf(s.mode) >= 0) route.mode = s.mode;
+          route.autoStart = true;
+          planRoute(dest);
+        },
+        no: function () { writePref(PREF.nav, ""); closeSheet(); },
+      },
+      closeAct: function () { writePref(PREF.nav, ""); closeSheet(); },
+    });
   }
   function endNav(arrived) {
     var dest = route.dest;
@@ -2066,9 +2141,10 @@
     $("navbar").hidden = true;
     measureUi();
     releaseWakeLock();
+    writePref(PREF.nav, "");
     closeSheet();
     clearRoute();
-    if (arrived && dest) { toast(t("route.arrived"), 5000); openPlace(dest.f); }
+    if (arrived && dest) { toast(t("route.arrived"), 5000); if (dest.f) openPlace(dest.f); }
   }
   function navSpec() {
     return {
@@ -2112,7 +2188,7 @@
     } else nav.off = 0;
     nav.seg = pr.seg;
     // on the route: show the dot on the line, pointing along it (as navigation apps do)
-    var cc = route.res.coords, onRoute = pr.d < 25;
+    var cc = route.res.coords, onRoute = pr.d < Math.max(25, Math.min(loc.acc || 0, 40));
     loc.shown = onRoute ? pr.at : loc.pos;
     loc.navBearing = onRoute ? BlokkRouter.bearing(cc[pr.seg], cc[Math.min(pr.seg + 1, cc.length - 1)]) : null;
     var total = route.res.distance, left = Math.max(0, total - pr.along);
@@ -2243,5 +2319,5 @@
   setTraffic(readPref(PREF.traffic) !== "0", false);  // on by default when a key is configured
   initLocation();
 
-  window.__blokk = { map: map, trafficOn: trafficOn, route: function () { return route; }, nav: function () { return nav; }, loc: function () { return loc; }, streetStats: function () { return streetStats; }, renderLabels: renderLabels, poiHits: function () { return poiHits; }, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
+  window.__blokk = { map: map, trafficOn: trafficOn, route: function () { return route; }, nav: function () { return nav; }, loc: function () { return loc; }, streetStats: function () { return streetStats; }, renderLabels: renderLabels, geo: geo, poiHits: function () { return poiHits; }, blocks: function () { return blocks; }, entrances: function () { return entrances; }, search: search };
 })();
